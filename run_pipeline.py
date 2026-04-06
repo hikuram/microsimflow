@@ -162,9 +162,9 @@ def main():
         prop_inter = args.prop_inter or "30.0"
         default_filler = "300.0"
     elif args.physics_mode == 'electrical':
-        prop_A = args.prop_A or "1e-6"
-        prop_B = args.prop_B or "1e-6"
-        prop_inter = args.prop_inter or "1e-2"
+        prop_A = args.prop_A or "1e-4"
+        prop_B = args.prop_B or "1e-4"
+        prop_inter = args.prop_inter or "1e0"
         default_filler = "1e4"
     else: # mechanics
         prop_A = args.prop_A or "3.0 1.0"
