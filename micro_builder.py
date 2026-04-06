@@ -1656,9 +1656,9 @@ def export_chfem_inputs(final_grid, base_filename="model", voxel_size=1e-8, phys
         sigma_contact = 30.0     # Contact resistance phase (Penalty)
         analysis_type = 0
     elif physics_mode == 'electrical':
-        sigma_polymer = 1e-6    # Phase A & B (Insulator, minute value for convergence)
+        sigma_polymer = 1e-4    # Phase A & B (Insulator, minute value for convergence)
         sigma_filler = 1e4      # Conductive filler
-        sigma_contact = 1e-2    # Tunnel phase (Bonus)
+        sigma_contact = 1e0     # Tunnel phase (Bonus)
         analysis_type = 0
     elif physics_mode == 'mechanics':
         sigma_polymer = "3.0 1.0"    # Phase A & B (Resin)
