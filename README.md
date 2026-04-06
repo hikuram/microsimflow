@@ -25,5 +25,33 @@ It is recommended to build the environment using the provided `Dockerfile`.
 # Build the Docker image
 docker build -t microsim_env .
 
-# Run the container
-docker run --it --rm --gpus all -v $(pwd):/workspace bash
+# Run the container (Jupyter Lab starts on port 8888)
+docker run -it --rm --gpus all -v $(pwd):/workspace microsim_env bash
+```
+
+## Usage
+### Running Experiment Scripts
+Run parameter sweep experiments with pre-defined conditions.
+
+```bash
+python3 run_exp1_agglom.py
+python3 run_exp2_gyroid.py
+python3 run_exp3_hybrid.py
+```
+Executing each script will output structure data (`.vti`) and slice images (`.png`) in the `result_exp*/` directories, and generate a `.csv` summarizing the results in the root directory.
+
+### Plotting Results
+After the experiments are complete, you can generate graphs with the following scripts:
+
+```bash
+python3 plot_exp1_agglom.py
+python3 plot_exp2_gyroid.py
+python3 plot_exp3_hybrid.py
+```
+
+### Running Custom Pipelines
+You can run simulations under custom conditions by passing arguments to `run_pipeline.py`.
+
+```bash
+python3 run_pipeline.py --size 200 --bg_type single --physics_mode electrical --solver chfem --recipe "rigidfiber:0.05:length=60:radius=2" --basename custom_model
+```
