@@ -843,10 +843,28 @@ def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics
         final_grid[removed_interface & writable_mask] = tpms_grid[removed_interface & writable_mask]
         
     elif physics_mode == 'thermal':
-        # Revert removed interface (contact penalty) back to primary filler (ID 3)
-        # Since these were tiny contact spots between fillers, merging them into the filler body is physically sound.
+        # Revert removed interface (contact penalty) to the most prevalent adjacent filler ID
         if np.any(removed_interface):
-            final_grid[removed_interface] = 3
+            filler_ids = np.unique(final_grid[final_grid >= 3])
+            
+            if len(filler_ids) == 0:
+                # Fallback if no fillers are somehow present
+                final_grid[removed_interface] = 3
+            elif len(filler_ids) == 1:
+                # Fast path for single filler type
+                final_grid[removed_interface] = filler_ids[0]
+            else:
+                # Multiple filler types: count 6-neighbors for each filler ID
+                counts = []
+                for fid in filler_ids:
+                    # Convolve returns how many 'fid' voxels touch each grid point
+                    c = convolve((final_grid == fid).astype(np.uint8), _NEIGHBOR6_KERNEL, mode="wrap")
+                    counts.append(c[removed_interface])
+                
+                # counts array shape: (num_filler_ids, num_removed_voxels)
+                counts = np.array(counts)
+                best_idx = np.argmax(counts, axis=0)
+                final_grid[removed_interface] = filler_ids[best_idx]
 
     return final_grid
 
