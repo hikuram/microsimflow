@@ -30,7 +30,9 @@ RUN pip3 install --no-cache-dir \
     scipy \
     tifffile \
     tqdm \
-    matplotlib
+    matplotlib \
+    pandas \
+    pyvista
 
 # Physically remove Matplotlib font cache and safely rebuild it using the standard method
 RUN rm -rf /root/.cache/matplotlib && \
