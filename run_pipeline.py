@@ -70,20 +70,24 @@ def run_puma_laplace(final_grid, voxel_size, physics_mode, cond_map):
     ws = puma.Workspace.from_array(final_grid.transpose(2, 1, 0))
     ws.voxel_length = voxel_size
 
+    puma_cond_map = puma.IsotropicConductivityMap()
+    for phase_id, cond_val in cond_map.items():
+        puma_cond_map.add_material((int(phase_id), int(phase_id)), float(cond_val))
+
     print("\n--- Running PuMA Solver ---")
     t0 = time.time()
     
     # Compute for each XYZ direction (specify periodic boundary conditions with side_bc='p')
     print("Computing X direction...")
-    res_x = puma.compute_thermal_conductivity(ws, cond_map, direction='x', side_bc='p')
+    res_x = puma.compute_thermal_conductivity(ws, puma_cond_map, direction='x', side_bc='p', solver_type='cg')
     kxx = res_x[0] if isinstance(res_x, tuple) else res_x
     
     print("Computing Y direction...")
-    res_y = puma.compute_thermal_conductivity(ws, cond_map, direction='y', side_bc='p')
+    res_y = puma.compute_thermal_conductivity(ws, puma_cond_map, direction='y', side_bc='p', solver_type='cg')
     kyy = res_y[0] if isinstance(res_y, tuple) else res_y
     
     print("Computing Z direction...")
-    res_z = puma.compute_thermal_conductivity(ws, cond_map, direction='z', side_bc='p')
+    res_z = puma.compute_thermal_conductivity(ws, puma_cond_map, direction='z', side_bc='p', solver_type='cg')
     kzz = res_z[0] if isinstance(res_z, tuple) else res_z
     
     total_time = time.time() - t0
