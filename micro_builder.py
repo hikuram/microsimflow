@@ -1,6 +1,6 @@
 import math
 import numpy as np
-from scipy.ndimage import binary_dilation
+from scipy.ndimage import binary_dilation, convolve, label
 from tqdm.auto import tqdm
 import pyvista as pv
 
@@ -737,14 +737,135 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
 # E. Final Structure Integration, Output, and Aggregation
 # =========================================================
 
-def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics_mode='thermal', inter_id=2):
-    """Combine background and filler phases, and extract the shell phase for electrical/mechanics modes"""
+def _make_6n_kernel():
+    kernel = np.zeros((3, 3, 3), dtype=np.uint8)
+    kernel[1, 1, 0] = 1
+    kernel[1, 1, 2] = 1
+    kernel[1, 0, 1] = 1
+    kernel[1, 2, 1] = 1
+    kernel[0, 1, 1] = 1
+    kernel[2, 1, 1] = 1
+    return kernel
+
+_NEIGHBOR6_KERNEL = _make_6n_kernel()
+
+def _remove_spikes_6n(mask, min_neighbors=2):
+    """
+    Remove burr/spike voxels using 6-neighbor connectivity.
+    A voxel is removed if it has fewer than min_neighbors neighbors within the same mask.
+    """
+    if not np.any(mask):
+        return mask
+    neighbor_count = convolve(mask.astype(np.uint8), _NEIGHBOR6_KERNEL, mode="wrap")
+    return mask & (neighbor_count >= min_neighbors)
+
+
+def _fill_polymer_slivers(final_grid, inter_id=2):
+    """
+    Convert polymer voxels to interface when they are directly sandwiched
+    between filler and interface in 6-neighborhood.
+    """
+    polymer_mask = final_grid < 2
+    filler_mask = final_grid >= 3
+    interface_mask = final_grid == inter_id
+
+    filler_nb = convolve(filler_mask.astype(np.uint8), _NEIGHBOR6_KERNEL, mode="wrap") > 0
+    interface_nb = convolve(interface_mask.astype(np.uint8), _NEIGHBOR6_KERNEL, mode="wrap") > 0
+
+    sliver_mask = polymer_mask & filler_nb & interface_nb
+    if np.any(sliver_mask):
+        final_grid[sliver_mask] = inter_id
+
+    return final_grid
+
+
+def _cleanup_small_components(mask, min_component_size=2):
+    """
+    Remove tiny isolated connected components from a boolean mask.
+    Uses 6-neighbor connectivity.
+    """
+    if not np.any(mask):
+        return mask
+
+    labeled, num = label(mask, structure=_NEIGHBOR6_KERNEL)
+    if num == 0:
+        return mask
+
+    counts = np.bincount(labeled.ravel())
+    keep = counts >= min_component_size
+    keep[0] = False
+
+    return keep[labeled]
+
+def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics_mode='thermal', inter_id=2,
+                            sliver_fill_iters=1, spike_min_neighbors=2, min_interface_component_size=2):
+    """
+    Combine background and filler phases.
+
+    Applies 3-step interface cleanup for all physics modes:
+      1) fill polymer slivers between filler and interface
+      2) remove burr/spike voxels in interface
+      3) remove tiny isolated interface components
+    """
     final_grid = np.where(comp_grid > 0, comp_grid, tpms_grid).astype(np.uint8)
-    
+
     if physics_mode in ['electrical', 'mechanics'] and shell_count_grid is not None:
-        # Locations where IDs are less than 3 (i.e., polymers 0, 1 and extracted intermediate phase 2) and shells overlap become tunnel phase
+        # Base interface extraction for tunnel/bound rubber
         tunnel_mask = (shell_count_grid >= 2) & (final_grid < 3)
         final_grid[tunnel_mask] = inter_id
+
+    # --- Common Interface Cleanup ---
+    # 1) Polymer sliver fill
+    for _ in range(sliver_fill_iters):
+        before = np.count_nonzero(final_grid == inter_id)
+        final_grid = _fill_polymer_slivers(final_grid, inter_id=inter_id)
+        after = np.count_nonzero(final_grid == inter_id)
+        if after == before:
+            break
+
+    # 2) Spike removal on interface only
+    original_interface_mask = (final_grid == inter_id)
+    interface_mask = _remove_spikes_6n(original_interface_mask, min_neighbors=spike_min_neighbors)
+
+    # 3) Small component cleanup on interface only
+    interface_mask = _cleanup_small_components(
+        interface_mask,
+        min_component_size=min_interface_component_size
+    )
+
+    # Identify voxels removed during cleanup
+    removed_interface = original_interface_mask & (~interface_mask)
+
+    # Rebuild grid based on physics mode semantics
+    if physics_mode in ['electrical', 'mechanics']:
+        # Revert removed interface (tunnel/bound rubber) back to polymer
+        writable_mask = (final_grid < 3)
+        final_grid[removed_interface & writable_mask] = tpms_grid[removed_interface & writable_mask]
+        
+    elif physics_mode == 'thermal':
+        # Revert removed interface (contact penalty) to the most prevalent adjacent filler ID
+        if np.any(removed_interface):
+            filler_ids = np.unique(final_grid[final_grid >= 3])
+            
+            if len(filler_ids) == 0:
+                # Fallback if no fillers are somehow present
+                final_grid[removed_interface] = 3
+            elif len(filler_ids) == 1:
+                # Fast path for single filler type
+                final_grid[removed_interface] = filler_ids[0]
+            else:
+                # Multiple filler types: count 6-neighbors for each filler ID
+                counts = []
+                for fid in filler_ids:
+                    # Convolve returns how many 'fid' voxels touch each grid point
+                    c = convolve((final_grid == fid).astype(np.uint8), _NEIGHBOR6_KERNEL, mode="wrap")
+                    counts.append(c[removed_interface])
+                
+                # counts array shape: (num_filler_ids, num_removed_voxels)
+                counts = np.array(counts)
+                best_idx = np.argmax(counts, axis=0)
+                final_grid[removed_interface] = filler_ids[best_idx]
+
     return final_grid
 
 def summarize_phase_fractions(final_grid, inter_id=2):
@@ -772,22 +893,22 @@ def summarize_phase_fractions(final_grid, inter_id=2):
 def export_visualization_vti(final_grid, filename="microstructure.vti", voxel_size=1e-8, metadata=None):
     """
     Output the 3D grid in the optimal VTI format for ParaView.
-    Store as Point Data to enable volume rendering similar to TIFF stacks.
     Embed physical dimensions (voxel_size) and metadata for HUD (metadata) in Field Data.
     """
     import pyvista as pv
+
     grid = pv.ImageData()
     
+    # NumPy (Z, Y, X) -> PyVista (X, Y, Z)
     nz, ny, nx = final_grid.shape
-    # Define dimensions as points (vertices) instead of cells (boxes) (same behavior as TIFF)
-    grid.dimensions = (nx, ny, nz)
+    grid.dimensions = (nx + 1, ny + 1, nz + 1)
     
     # Set physical scale
     grid.spacing = (voxel_size, voxel_size, voxel_size)
     grid.origin = (0.0, 0.0, 0.0)
     
-    # Store in point_data instead of cell_data
-    grid.point_data["Phase"] = final_grid.flatten(order="C")
+    # Store in cell_data
+    grid.cell_data["Phase"] = final_grid.flatten(order="C")
     
     # Embed metadata (for HUD)
     if metadata:
