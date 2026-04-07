@@ -802,43 +802,51 @@ def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics
     """
     Combine background and filler phases.
 
-    Electrical / mechanics modes:
-      1) extract interface phase from shell overlap
-      2) fill polymer slivers between filler and interface
-      3) remove burr/spike voxels in interface
-      4) remove tiny isolated interface components
-
-    This intentionally avoids uniform thickening of the interface phase.
+    Applies 3-step interface cleanup for all physics modes:
+      1) fill polymer slivers between filler and interface
+      2) remove burr/spike voxels in interface
+      3) remove tiny isolated interface components
     """
     final_grid = np.where(comp_grid > 0, comp_grid, tpms_grid).astype(np.uint8)
 
     if physics_mode in ['electrical', 'mechanics'] and shell_count_grid is not None:
-        # Base interface extraction
+        # Base interface extraction for tunnel/bound rubber
         tunnel_mask = (shell_count_grid >= 2) & (final_grid < 3)
         final_grid[tunnel_mask] = inter_id
 
-        # 1) Polymer sliver fill
-        for _ in range(sliver_fill_iters):
-            before = np.count_nonzero(final_grid == inter_id)
-            final_grid = _fill_polymer_slivers(final_grid, inter_id=inter_id)
-            after = np.count_nonzero(final_grid == inter_id)
-            if after == before:
-                break
+    # --- Common Interface Cleanup ---
+    # 1) Polymer sliver fill
+    for _ in range(sliver_fill_iters):
+        before = np.count_nonzero(final_grid == inter_id)
+        final_grid = _fill_polymer_slivers(final_grid, inter_id=inter_id)
+        after = np.count_nonzero(final_grid == inter_id)
+        if after == before:
+            break
 
-        # 2) Spike removal on interface only
-        interface_mask = (final_grid == inter_id)
-        interface_mask = _remove_spikes_6n(interface_mask, min_neighbors=spike_min_neighbors)
+    # 2) Spike removal on interface only
+    original_interface_mask = (final_grid == inter_id)
+    interface_mask = _remove_spikes_6n(original_interface_mask, min_neighbors=spike_min_neighbors)
 
-        # 3) Small component cleanup on interface only
-        interface_mask = _cleanup_small_components(
-            interface_mask,
-            min_component_size=min_interface_component_size
-        )
+    # 3) Small component cleanup on interface only
+    interface_mask = _cleanup_small_components(
+        interface_mask,
+        min_component_size=min_interface_component_size
+    )
 
-        # Rebuild interface voxels only in polymer/interface region
+    # Identify voxels removed during cleanup
+    removed_interface = original_interface_mask & (~interface_mask)
+
+    # Rebuild grid based on physics mode semantics
+    if physics_mode in ['electrical', 'mechanics']:
+        # Revert removed interface (tunnel/bound rubber) back to polymer
         writable_mask = (final_grid < 3)
-        final_grid[(final_grid == inter_id) & writable_mask] = tpms_grid[(final_grid == inter_id) & writable_mask]
-        final_grid[interface_mask & writable_mask] = inter_id
+        final_grid[removed_interface & writable_mask] = tpms_grid[removed_interface & writable_mask]
+        
+    elif physics_mode == 'thermal':
+        # Revert removed interface (contact penalty) back to primary filler (ID 3)
+        # Since these were tiny contact spots between fillers, merging them into the filler body is physically sound.
+        if np.any(removed_interface):
+            final_grid[removed_interface] = 3
 
     return final_grid
 
@@ -881,7 +889,7 @@ def export_visualization_vti(final_grid, filename="microstructure.vti", voxel_si
     grid.spacing = (voxel_size, voxel_size, voxel_size)
     grid.origin = (0.0, 0.0, 0.0)
     
-    # Store in point_data instead of cell_data
+    # Store in cell_data
     grid.cell_data["Phase"] = final_grid.flatten(order="C")
     
     # Embed metadata (for HUD)
