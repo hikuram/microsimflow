@@ -39,14 +39,18 @@ RUN rm -rf /root/.cache/matplotlib && \
     python3 -c "import matplotlib.font_manager; matplotlib.font_manager.FontManager()"
 
 # 3. Clone and compile chfem_gpu
-RUN git clone https://github.com/cortezpedro/chfem.git /opt/chfem && \
+RUN git clone https://github.com/hikuram/chfem.git /opt/chfem && \
     cd /opt/chfem && \
     mkdir -p build && \
     cd build && \
     export NUMPY_INCLUDE=$(python3 -c "import numpy; print(numpy.get_include())") && \
     export C_INCLUDE_PATH=${NUMPY_INCLUDE}:${C_INCLUDE_PATH} && \
     export CPLUS_INCLUDE_PATH=${NUMPY_INCLUDE}:${CPLUS_INCLUDE_PATH} && \
-    cmake .. && \
+    cmake .. \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_CUDA_ARCHITECTURES=120 \
+      -DCMAKE_C_FLAGS="-DCUDAPCG_MATKEY_32BIT" \
+      -DCMAKE_CUDA_FLAGS="-DCUDAPCG_MATKEY_32BIT" && \
     make -j4
 
 # Add compiled chfem executable to PATH
