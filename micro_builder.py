@@ -867,22 +867,22 @@ def summarize_phase_fractions(final_grid, inter_id=2):
 def export_visualization_vti(final_grid, filename="microstructure.vti", voxel_size=1e-8, metadata=None):
     """
     Output the 3D grid in the optimal VTI format for ParaView.
-    Store as Point Data to enable volume rendering similar to TIFF stacks.
     Embed physical dimensions (voxel_size) and metadata for HUD (metadata) in Field Data.
     """
     import pyvista as pv
+
     grid = pv.ImageData()
     
+    # NumPy (Z, Y, X) -> PyVista (X, Y, Z)
     nz, ny, nx = final_grid.shape
-    # Define dimensions as points (vertices) instead of cells (boxes) (same behavior as TIFF)
-    grid.dimensions = (nx, ny, nz)
+    grid.dimensions = (nx + 1, ny + 1, nz + 1)
     
     # Set physical scale
     grid.spacing = (voxel_size, voxel_size, voxel_size)
     grid.origin = (0.0, 0.0, 0.0)
     
     # Store in point_data instead of cell_data
-    grid.point_data["Phase"] = final_grid.flatten(order="C")
+    grid.cell_data["Phase"] = final_grid.flatten(order="C")
     
     # Embed metadata (for HUD)
     if metadata:
