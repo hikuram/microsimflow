@@ -76,24 +76,29 @@ def run_puma_laplace(final_grid, voxel_size, physics_mode, cond_map):
 
     print("\n--- Running PuMA Solver ---")
     t0 = time.time()
-    
-    # Compute for each XYZ direction (specify periodic boundary conditions with side_bc='p')
-    print("Computing X direction...")
-    res_x = puma.compute_thermal_conductivity(ws, puma_cond_map, direction='x', side_bc='p', solver_type='cg')
-    kxx = res_x[0] if isinstance(res_x, tuple) else res_x
-    
-    print("Computing Y direction...")
-    res_y = puma.compute_thermal_conductivity(ws, puma_cond_map, direction='y', side_bc='p', solver_type='cg')
-    kyy = res_y[0] if isinstance(res_y, tuple) else res_y
-    
-    print("Computing Z direction...")
-    res_z = puma.compute_thermal_conductivity(ws, puma_cond_map, direction='z', side_bc='p', solver_type='cg')
-    kzz = res_z[0] if isinstance(res_z, tuple) else res_z
-    
-    total_time = time.time() - t0
-    print(f"PuMA computation completed in {total_time:.2f}s")
-    
-    return kxx, kyy, kzz, total_time
+
+    try:
+        # Compute for each XYZ direction (specify periodic boundary conditions with side_bc='p')
+        print("Computing X direction...")
+        res_x = puma.compute_thermal_conductivity(ws, puma_cond_map, direction='x', side_bc='p', solver_type='cg')
+        kxx = res_x[0] if isinstance(res_x, tuple) else res_x
+        
+        print("Computing Y direction...")
+        res_y = puma.compute_thermal_conductivity(ws, puma_cond_map, direction='y', side_bc='p', solver_type='cg')
+        kyy = res_y[0] if isinstance(res_y, tuple) else res_y
+        
+        print("Computing Z direction...")
+        res_z = puma.compute_thermal_conductivity(ws, puma_cond_map, direction='z', side_bc='p', solver_type='cg')
+        kzz = res_z[0] if isinstance(res_z, tuple) else res_z
+        
+        total_time = time.time() - t0
+        print(f"PuMA computation completed in {total_time:.2f}s")
+        
+        return kxx, kyy, kzz, total_time
+
+    except Exception as e:
+        print(f"PuMA encountered an error during computation: {e}")
+        return None, None, None, 0.0
 
 def save_thumbnail_png(grid, filename, phase_labels=None):
     """
