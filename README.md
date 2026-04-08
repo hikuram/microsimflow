@@ -1,57 +1,83 @@
 # microsimflow
 
-A Python package integrating custom microstructure modeling with property evaluations (thermal, electrical, and mechanical) using the `chfem` and `PuMA` solvers.
+A Python package integrating custom 3D microstructure modeling with property evaluations (thermal, electrical, and mechanical) using the `chfem` and `PuMA` solvers.
 
-This repository is designed to provide a flat script structure from structure generation to solver execution and result visualization, allowing you to reproduce and expand experiments without managing complex directory hierarchies.
+This repository provides an end-to-end flat script structure—from structure generation to solver execution and result visualization. It features robust experiment management, allowing you to reproduce and expand large-scale parameter sweeps without managing complex directory hierarchies or worrying about data loss.
 
-## Key Features
-* **Diverse Background Phases**: Single phase, Gyroid (co-continuous), Lamellar, Cylinder, BCC, Sea-Island structures, etc.
-* **Adaptive Filler Placement**: Rigid spheres, flakes, and rigid cylinders, as well as the generation of flexible fibers and agglomerates that grow adaptively to the topology.
+## ✨ Key Features
+* **Diverse Background Phases**: Single phase, Gyroid (co-continuous), Lamellar, Cylinder, BCC, Sea-Island structures.
+* **Adaptive Filler Placement**: Rigid spheres, flakes, rigid cylinders, and topology-adaptive flexible fibers/agglomerates.
 * **Dual Solver Integration**: 
   * `chfem`: High-efficiency homogenization solver with GPU support.
   * `PuMA`: Multipurpose solver for the Laplace equation.
+* **Robust Experiment Management**: Automated sequential directory creation (`result_expX_01/`, `02/`...) prevents data overwriting, while all metrics are safely appended to a central `.csv` log.
+* **Cloud & Local Ready**: Includes a `Dockerfile` for local GPU workstations and a Jupyter Notebook for instant execution on Google Colab (T4 GPU).
 
-## File Structure
-* `micro_builder.py`: Core module for microstructure generation logic.
-* `run_pipeline.py`: Main CLI tool bridging structure generation and solver execution.
-* `run_exp*.py`: Automation scripts for running various parameter sweep experiments.
-* `plot_exp*.py`: Scripts for generating plots (PNG) from experiment results (CSV).
-* `Dockerfile`: Container environment based on `nvidia/cuda:12.9.1-devel-ubuntu22.04` with required Python libraries and pre-compiled `chfem`.
+---
 
-## Environment Setup
-It is recommended to build the environment using the provided `Dockerfile`.
+## 🚀 Environment Setup
+
+You can run `microsimflow` either locally using Docker or in the cloud using Google Colab.
+
+### Option A: Local Run via Docker (Recommended)
+It is recommended to build the environment using the provided `Dockerfile`. It includes Python dependencies, `PuMA`, and pre-compiled `chfem` (CUDA 12.9).
 
 ```bash
 # Build the Docker image
 docker build -t microsim_env .
 
-# Run the container (Jupyter Lab starts on port 8888)
+# Run the container
 docker run -it --rm --gpus all -v $(pwd):/workspace microsim_env bash
 ```
 
-## Usage
-### Running Experiment Scripts
-Run parameter sweep experiments with pre-defined conditions.
+### Option B: Google Colab (Cloud)
+If you do not have a local GPU, you can use the provided `microsimflow_on_colab.ipynb`. 
+Just upload the notebook to Google Colab, set the runtime to **T4 GPU**, and run the cells. It automatically compiles a compatible version of `chfem` and executes the experiment suite. *(Note: PuMA is disabled in the Colab lightweight environment).*
+
+---
+
+## 🧪 Usage
+
+### 1. Running Parameter Sweep Experiments
+We provide pre-defined scripts to run specific physical studies. Results (3D `.vti` files, `.png` slices, and logs) are saved into automatically numbered directories (e.g., `result_exp1_01/`), while numerical metrics are aggregated into a central CSV file in the root directory.
 
 ```bash
-python3 run_exp1_agglom.py
-python3 run_exp2_gyroid.py
-python3 run_exp3_hybrid.py
+python3 run_exp0_percolation.py   # Standard percolation sweep (length, radius, volume fraction)
+python3 run_exp1_agglom.py        # Agglomeration sweep (fiber entanglement effects)
+python3 run_exp2_gyroid.py        # Gyroid background sweep
+python3 run_exp3_hybrid.py        # Hybrid synergy sweep (mixing fibers and flakes)
+python3 run_exp4_scale_check.py   # Representative Volume Element (RVE) scale validation
 ```
-Executing each script will output structure data (`.vti`) and slice images (`.png`) in the `result_exp*/` directories, and generate a `.csv` summarizing the results in the root directory.
 
-### Plotting Results
-After the experiments are complete, you can generate graphs with the following scripts:
+### 2. Plotting Results
+Once the experiments are complete and the central CSV logs are generated, you can visualize the trends using the included plotting scripts:
 
 ```bash
 python3 plot_exp1_agglom.py
 python3 plot_exp2_gyroid.py
 python3 plot_exp3_hybrid.py
 ```
+*These scripts will read the generated CSVs and output comparison graphs.*
 
-### Running Custom Pipelines
-You can run simulations under custom conditions by passing arguments to `run_pipeline.py`.
+### 3. Running Custom Pipelines
+You can easily design and run a custom simulation by passing arguments directly to `run_pipeline.py`.
 
 ```bash
-python3 run_pipeline.py --size 200 --bg_type single --physics_mode electrical --solver chfem --recipe "rigidfiber:0.05:length=60:radius=2" --basename custom_model
+python3 run_pipeline.py \
+  --size 200 \
+  --bg_type single \
+  --physics_mode electrical \
+  --solver both \
+  --recipe "rigidfiber:0.05:length=60:radius=2" \
+  --basename custom_model \
+  --csv_log custom_results.csv
 ```
+
+---
+
+## 📁 File Structure Overview
+* `micro_builder.py`: Core logic for 3D microstructure generation and RSA (Random Sequential Adsorption) placement.
+* `run_pipeline.py`: The main CLI engine bridging structure generation and solver execution.
+* `run_exp*.py`: Automation scripts for batch experiments.
+* `plot_exp*.py`: Matplotlib scripts for generating charts from experiment CSV logs.
+* `Dockerfile` / `microsimflow_on_colab.ipynb`: Environment configuration files.
