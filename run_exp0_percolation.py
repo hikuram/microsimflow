@@ -2,19 +2,29 @@ import subprocess
 import os
 import numpy as np
 
+def get_next_result_dir(base_name="result_exp0_"):
+    """Generate sequential directory names (e.g., result_exp0_01) automatically."""
+    i = 1
+    while True:
+        dir_name = f"{base_name}{i:02d}"
+        if not os.path.exists(dir_name):
+            return dir_name
+        i += 1
+
 def run():
-    csv_log = "exp0_percolation_results.csv"
-    out_dir = "result_exp0"
-    os.makedirs(out_dir, exist_ok=True)
+    csv_log = "exp0_percolation_results.csv"  # Accumulated in the root directory
+    out_dir = get_next_result_dir()
+    os.makedirs(out_dir)
     
-    # Sweep volume fractions from 0.01 to 0.10 in increments of 0.01
-    vfs = np.round(np.arange(0.01, 0.11, 0.01), 2)
+    # Sweep volume fractions from 0.02 to 0.30 in increments of 0.02
+    vfs = np.round(np.arange(0.02, 0.32, 0.02), 2)
     
     # 2 levels of filler radius (e.g., changing the aspect ratio if length is fixed)
     radii = [2, 4, 6]
     seeds = [1, 2, 3]
 
-    print(f"Starting Exp0: Standard Percolation Sweep -> {csv_log}")
+    print(f"Created output directory: {out_dir}")
+    print(f"Starting Exp0: Standard Percolation Sweep. All metrics appended to '{csv_log}'")
     
     for r in radii:
         for vf in vfs:

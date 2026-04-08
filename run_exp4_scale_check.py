@@ -1,10 +1,19 @@
 import subprocess
 import os
 
+def get_next_result_dir(base_name="result_exp4_"):
+    """Generate sequential directory names automatically."""
+    i = 1
+    while True:
+        dir_name = f"{base_name}{i:02d}"
+        if not os.path.exists(dir_name):
+            return dir_name
+        i += 1
+
 def run():
     csv_log = "scale_check_results.csv"
-    out_dir = "result_scale_check"
-    os.makedirs(out_dir, exist_ok=True)
+    out_dir = get_next_result_dir()
+    os.makedirs(out_dir)
     
     # Pattern definition: (box_size, length, radius)
     configs = [
@@ -22,10 +31,11 @@ def run():
     ]
     
     # Coarse sweep to grasp trends
-    vfs = [0.01, 0.03, 0.05, 0.07]
+    vfs = [0.03, 0.06, 0.09, 0.12]
     seeds = [1, 2, 3]
 
-    print(f"Starting Scale & Box Size Check -> {csv_log}")
+    print(f"Created output directory: {out_dir}")
+    print(f"Starting Scale & Box Size Check. All metrics appended to '{csv_log}'")
     
     for size, length, radius in configs:
         for vf in vfs:
@@ -45,9 +55,8 @@ def run():
                     "--csv_log", csv_log,
                     "--seed", str(seed),
                     "--recipe"
-                ] + recipe.split()  # Expand space-separated recipe into a list and combine
+                ] + recipe.split()
                 
-                print(f"\nRunning: Size={size}, L={length}, r={radius}, Vf={vf}, Seed={seed}")
                 subprocess.run(cmd)
 
 if __name__ == "__main__":
