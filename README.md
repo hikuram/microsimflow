@@ -8,7 +8,7 @@ This repository provides an end-to-end flat script structure—from structure ge
 * **Diverse Background Phases**: Single phase, Gyroid (co-continuous), Lamellar, Cylinder, BCC, Sea-Island structures.
 * **Adaptive Filler Placement**: Rigid spheres, flakes, rigid cylinders, and topology-adaptive flexible fibers/agglomerates.
 * **Dual Solver Integration**: 
-  * `chfem`: High-efficiency homogenization solver with GPU support.
+  * `chfem`: High-efficiency homogenization solver with GPU support. *(Note: This environment compiles a custom fork to enable the specific build options required for models with 5 or more properties).*
   * `PuMA`: Multipurpose solver for the Laplace equation.
 * **Robust Experiment Management**: Automated sequential directory creation (`result_expX_01/`, `02/`...) prevents data overwriting, while all metrics are safely appended to a central `.csv` log.
 * **Cloud & Local Ready**: Includes a `Dockerfile` for local GPU workstations and a Jupyter Notebook for instant execution on Google Colab (T4 GPU).
@@ -20,7 +20,10 @@ This repository provides an end-to-end flat script structure—from structure ge
 You can run `microsimflow` either locally using Docker or in the cloud using Google Colab.
 
 ### Option A: Local Run via Docker (Recommended)
-It is recommended to build the environment using the provided `Dockerfile`. It includes Python dependencies, `PuMA`, and pre-compiled `chfem` (CUDA 12.9).
+It is recommended to build the environment using the provided `Dockerfile`. 
+This process installs Python dependencies, `PuMA`, and **compiles `chfem` from source** (CUDA 12.9). 
+
+*Important: Because the official `chfem` repository currently fails to build when passing the `-DCUDAPCG_MATKEY_32BIT` flag (required for models with 5+ properties), the Dockerfile uses a temporarily forked version with the necessary typo fixes.*
 
 ```bash
 # Build the Docker image
