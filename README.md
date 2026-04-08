@@ -56,6 +56,7 @@ python3 run_exp4_scale_check.py   # Representative Volume Element (RVE) scale va
 Once the experiments are complete and the central CSV logs are generated, you can visualize the trends using the included plotting scripts:
 
 ```bash
+python3 plot_exp0_percolation.py
 python3 plot_exp1_agglom.py
 python3 plot_exp2_gyroid.py
 python3 plot_exp3_hybrid.py
