@@ -7,7 +7,7 @@ import subprocess
 import numpy as np
 import matplotlib.pyplot as plt
 
-# Import from micro_builder (same as before)
+# Import from micro_builder
 from micro_builder import (
     set_random_seed,
     build_single_phase_grid,
@@ -100,11 +100,9 @@ def save_thumbnail_png(grid, filename, phase_labels=None):
     Save the Z-axis center slice as a PNG with a dynamic colorbar
     
     phase_labels: Phase definitions in dictionary format {ID: 'Label'}.
-                  If None, default 4 phases are applied.
     """
-    # Default phase definitions (modify here if elements change, or pass as arguments)
     if phase_labels is None:
-        phase_labels = {0: 'Polymer A', 1: 'Polymer B', 2: 'Filler', 3: 'Contact Phase'}
+        phase_labels = {0: 'Polymer A', 1: 'Polymer B', 2: 'Primary Inter', 3: 'Secondary Inter', 4: 'Filler'}
         
     plt.rcParams.update({
         'font.family': 'sans-serif',
@@ -148,7 +146,8 @@ def parse_args():
     parser.add_argument("--solver", type=str, default="both", choices=["chfem", "puma", "both"], help="Solver for homogenisation")
     parser.add_argument("--prop_A", type=str, default=None, help="Property for Polymer A")
     parser.add_argument("--prop_B", type=str, default=None, help="Property for Polymer B")
-    parser.add_argument("--prop_inter", type=str, default=None, help="Property for Contact/Tunnel phase")
+    parser.add_argument("--prop_inter", type=str, default=None, help="Property for Primary Contact/Tunnel phase")
+    parser.add_argument("--prop_inter2", type=str, default=None, help="Property for Secondary Contact/Tunnel phase")
     parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")
     return parser.parse_args()
 
@@ -163,28 +162,38 @@ def main():
     if args.physics_mode == 'thermal':
         prop_A = args.prop_A or "0.3"
         prop_B = args.prop_B or "0.3"
-        prop_inter = args.prop_inter or "30.0"
+        prop_primary_inter = args.prop_inter or "30.0"
+        prop_secondary_inter = args.prop_inter2 or "30.0" # Safe fallback even if not present in grid
         default_filler = "300.0"
     elif args.physics_mode == 'electrical':
         prop_A = args.prop_A or "1e-4"
         prop_B = args.prop_B or "1e-4"
-        prop_inter = args.prop_inter or "1e0"
+        prop_primary_inter = args.prop_inter or "1e-1"
+        prop_secondary_inter = args.prop_inter2 or "1e-3"
         default_filler = "1e4"
     else: # mechanics
         prop_A = args.prop_A or "3.0 1.0"
         prop_B = args.prop_B or "3.0 1.0"
-        prop_inter = args.prop_inter or "15.0 5.0"
+        prop_primary_inter = args.prop_inter or "15.0 5.0"
+        prop_secondary_inter = args.prop_inter2 or "10.0 3.0"
         default_filler = "100.0 50.0"
 
-    # Count valid recipes and determine intermediate phase ID (2 + number of recipes)
+    # Count valid recipes
     valid_recipes = [r for r in args.recipe if float(r.split(':')[1]) > 0]
     
-    # Fixed ID assignment
-    inter_id = 2
-    current_filler_id = 3
+    # Fixed ID assignment based on new micro_builder logic
+    primary_inter_id = 2
+    secondary_inter_id = 3
+    filler_start_id = 4
+    current_filler_id = filler_start_id
     
-    # Initialize property mapping dictionary (0: A, 1: B, 2: common intermediate phase)
-    prop_map = {0: prop_A, 1: prop_B, inter_id: prop_inter}
+    # Initialize property mapping dictionary
+    prop_map = {
+        0: prop_A, 
+        1: prop_B, 
+        primary_inter_id: prop_primary_inter,
+        secondary_inter_id: prop_secondary_inter
+    }
     
     print(f"--- Pipeline Start: {args.basename} ({args.physics_mode} mode, bg: {args.bg_type}, solver: {args.solver}) ---")
     
@@ -202,19 +211,14 @@ def main():
     if args.bg_type == "single":
         _, tpms_grid, _, actual_phaseA = build_single_phase_grid(args.size)
     elif args.bg_type == "lamellar":
-        # Lamellar structure (spread in XY plane, stacked in Z direction)
         _, tpms_grid, _, actual_phaseA = build_lamellar_grid(args.size, wavelength=10, target_phaseA_ratio=args.phaseA_ratio)
     elif args.bg_type == "cylinder":
-        # Cylinder structure (upright in Z-axis direction, hexagonal array in XY plane)
         _, tpms_grid, _, actual_phaseA = build_cylinder_hex_grid(args.size, wavelength=15, target_phaseA_ratio=args.phaseA_ratio)
     elif args.bg_type == "bcc":
-        # Body-centered cubic structure (BCC: 3D regular array of spherical domains)
         _, tpms_grid, _, actual_phaseA = build_bcc_grid(args.size, wavelength=15, target_phaseA_ratio=args.phaseA_ratio)
     elif args.bg_type == "sea_island":
-        # Sea-island structure
         _, tpms_grid, _, actual_phaseA = build_sea_island_grid(args.size, island_radius=8, target_phaseA_ratio=args.phaseA_ratio)
     elif args.bg_type == "island_sea":
-        # Island-sea structure
         _, tpms_grid, _, actual_phaseA = build_island_sea_grid(args.size, island_radius=8, target_phaseA_ratio=args.phaseA_ratio)
     else:
         # Gyroid
@@ -249,34 +253,34 @@ def main():
             place_fillers_hybrid(comp_grid, tpms_grid, get_flake_mask, kwargs, f_vol, 
                                  protrusion_coef=protrusion_coef, log_file=build_log,
                                  physics_mode=args.physics_mode, shell_count_grid=shell_count_grid, 
-                                 filler_id=current_filler_id, inter_id=inter_id)
+                                 filler_id=current_filler_id, inter_id=primary_inter_id)
         elif f_type == "sphere":
             kwargs = {'radius': opts.get('radius', 5)}
             place_fillers_hybrid(comp_grid, tpms_grid, get_sphere_mask, kwargs, f_vol, 
                                  protrusion_coef=protrusion_coef, desc="Sphere", log_file=build_log,
                                  physics_mode=args.physics_mode, shell_count_grid=shell_count_grid, 
-                                 filler_id=current_filler_id, inter_id=inter_id)
+                                 filler_id=current_filler_id, inter_id=primary_inter_id)
                                  
         elif f_type == "rigidfiber":
             kwargs = {'length': opts.get('length', 60), 'radius': opts.get('radius', 2)}
             place_fillers_hybrid(comp_grid, tpms_grid, get_rigid_cylinder_mask, kwargs, f_vol, 
                                  protrusion_coef=protrusion_coef, desc="Rigid Fiber", log_file=build_log,
                                  physics_mode=args.physics_mode, shell_count_grid=shell_count_grid, 
-                                 filler_id=current_filler_id, inter_id=inter_id)
+                                 filler_id=current_filler_id, inter_id=primary_inter_id)
         elif f_type == "adaptfiber":
             place_adaptive_fibers(comp_grid, tpms_grid, f_vol,
                                   length=opts.get('length', 90), radius=opts.get('radius', 2),
                                   max_bend_deg=opts.get('max_bend_deg', 45), max_total_bends=opts.get('max_total_bends', 5),
                                   min_backbone_ratio=opts.get('min_backbone_ratio', 0.9), max_protrusion_ratio=protrusion_coef,
                                   log_file=build_log, physics_mode=args.physics_mode, shell_count_grid=shell_count_grid,
-                                  filler_id=current_filler_id, inter_id=inter_id)
+                                  filler_id=current_filler_id, inter_id=primary_inter_id)
         elif f_type == "flexfiber":
             place_fillers_hybrid(comp_grid, tpms_grid, get_flexible_fiber_mask,
                                  {'length': opts.get('length', 90), 'radius': opts.get('radius', 2),
                                   'max_bend_deg': opts.get('max_bend_deg', 90), 'max_total_bends': opts.get('max_total_bends', 10)}, 
                                  f_vol, protrusion_coef=protrusion_coef, desc="Flexible Fibers", log_file=build_log,
                                  physics_mode=args.physics_mode, shell_count_grid=shell_count_grid,
-                                 filler_id=current_filler_id, inter_id=inter_id)
+                                 filler_id=current_filler_id, inter_id=primary_inter_id)
         elif f_type == "agglomerate":
             place_fillers_hybrid(comp_grid, tpms_grid, get_agglomerate_mask,
                                  {'num_fibers': opts.get('num_fibers', 5),
@@ -284,26 +288,37 @@ def main():
                                   'max_bend_deg': opts.get('max_bend_deg', 90), 'max_total_bends': opts.get('max_total_bends', 10)}, 
                                  f_vol, protrusion_coef=protrusion_coef, desc=f"Agglomerate(n={int(opts.get('num_fibers', 5))})", 
                                  log_file=build_log, physics_mode=args.physics_mode, shell_count_grid=shell_count_grid,
-                                 filler_id=current_filler_id, inter_id=inter_id)
+                                 filler_id=current_filler_id, inter_id=primary_inter_id)
         
         step_logs.append(f"{f_type}(ID:{current_filler_id}):{time.time() - t_step:.1f}s")
         # Increment ID for the next filler recipe
         current_filler_id += 1
 
     # 3. Integration of final structure and creation of metadata
-    # Integrate final structure (combine background and filler phases, batch extract tunnel phase/bound rubber)
-    final_grid = finalize_microstructure(comp_grid, tpms_grid, shell_count_grid, args.physics_mode, inter_id=inter_id)
-    phase_stats = summarize_phase_fractions(final_grid, inter_id=inter_id)
+    # Integrate final structure and perform cleanup/interface separation
+    final_grid = finalize_microstructure(
+        comp_grid, tpms_grid, shell_count_grid, args.physics_mode, 
+        primary_inter_id=primary_inter_id, 
+        secondary_inter_id=secondary_inter_id, 
+        filler_start_id=filler_start_id
+    )
+    phase_stats = summarize_phase_fractions(
+        final_grid, 
+        primary_inter_id=primary_inter_id, 
+        secondary_inter_id=secondary_inter_id, 
+        filler_start_id=filler_start_id
+    )
     
-    # Generate legend labels (aligned in order of Polymer A, Polymer B, Interface, Filler)
+    # Generate legend labels
     phase_labels = {
         0: 'Polymer A', 
         1: 'Polymer B', 
-        inter_id: 'Interface'
+        primary_inter_id: 'Primary Inter',
+        secondary_inter_id: 'Secondary Inter'
     }
-    for i in range(3, current_filler_id):
-        # If there are multiple filler types, they become Filler 1, Filler 2...
-        phase_labels[i] = f'Filler {i-2}' if current_filler_id > 4 else 'Filler'
+    for i in range(filler_start_id, current_filler_id):
+        phase_labels[i] = f'Filler {i-filler_start_id+1}' if current_filler_id > filler_start_id + 1 else 'Filler'
+
     metadata = {
         "Basename": args.basename,
         "Grid_Size": str(args.size),
@@ -314,7 +329,8 @@ def main():
         "Recipe": " ".join(args.recipe),
         "PolymerA_Frac": f"{phase_stats['polymer_a_fraction']:.4f}",
         "PolymerB_Frac": f"{phase_stats['polymer_b_fraction']:.4f}",
-        "Interface_Frac": f"{phase_stats['interface_fraction']:.4f}",
+        "Primary_Inter_Frac": f"{phase_stats['primary_interface_fraction']:.4f}",
+        "Secondary_Inter_Frac": f"{phase_stats['secondary_interface_fraction']:.4f}",
         "Filler_Frac": f"{phase_stats['filler_total_fraction']:.4f}",
     }
     
@@ -350,7 +366,7 @@ def main():
         if not file_exists:
             writer.writerow([
                 "Basename", "Size", "Voxel_Size_m", "BG_Type", "Mode", "Solver", "Recipe", 
-                "PolymerA_Frac", "PolymerB_Frac", "Interface_Frac", "Filler_Frac", "Placement_Logs", 
+                "PolymerA_Frac", "PolymerB_Frac", "Primary_Inter_Frac", "Secondary_Inter_Frac", "Filler_Frac", "Placement_Logs", 
                 "chfem_Time_s", "chfem_Kxx", "chfem_Kyy", "chfem_Kzz",
                 "puma_Time_s", "puma_Kxx", "puma_Kyy", "puma_Kzz"
             ])
@@ -359,7 +375,8 @@ def main():
             args.basename, args.size, args.voxel_size, args.bg_type, args.physics_mode, args.solver, " ".join(args.recipe),
             f"{phase_stats['polymer_a_fraction']:.4f}",
             f"{phase_stats['polymer_b_fraction']:.4f}",
-            f"{phase_stats['interface_fraction']:.4f}", 
+            f"{phase_stats['primary_interface_fraction']:.4f}", 
+            f"{phase_stats['secondary_interface_fraction']:.4f}", 
             f"{phase_stats['filler_total_fraction']:.4f}",
             " | ".join(step_logs),
             chfem_time, chfem_kxx, chfem_kyy, chfem_kzz,
