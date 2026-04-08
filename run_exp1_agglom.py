@@ -1,15 +1,25 @@
 import subprocess
 import os
 
+def get_next_result_dir(base_name="result_exp1_"):
+    """Generate sequential directory names automatically."""
+    i = 1
+    while True:
+        dir_name = f"{base_name}{i:02d}"
+        if not os.path.exists(dir_name):
+            return dir_name
+        i += 1
+
 def run():
     csv_log = "exp1_agglom_results.csv"
-    out_dir = "result_exp1"
-    os.makedirs(out_dir, exist_ok=True)
+    out_dir = get_next_result_dir()
+    os.makedirs(out_dir)
     
     ns = [1, 2, 3, 5, 10, 15, 20, 25]
     seeds = [1, 2, 3]
 
-    print(f"Starting Exp1: Agglomeration Sweep -> {csv_log}")
+    print(f"Created output directory: {out_dir}")
+    print(f"Starting Exp1: Agglomeration Sweep. All metrics appended to '{csv_log}'")
     for n in ns:
         for seed in seeds:
             # Bending parameters to reproduce the agglomeration of flexible fibers
