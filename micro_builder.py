@@ -480,8 +480,8 @@ def grow_adaptive_fiber(tpms_grid, comp_grid, start_pos, length, overlap_mode,
                         if np.linalg.norm(u_ortho) == 0: continue
                         u_ortho /= np.linalg.norm(u_ortho)
                         
-                        # Calculate side step distance: Center-to-center distance of 4 * R
-                        shift_dist = max(2, int(radius * 4))
+                        # Calculate side step distance: Center-to-center distance of 1.6 * R
+                        shift_dist = max(2, int(radius * 1.6))
                         
                         sidestep_success = True
                         temp_pos = current_pos.copy()
