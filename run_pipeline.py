@@ -328,10 +328,6 @@ def main():
         step_logs.append(f"{f_type}(ID:{current_filler_id}):{time.time() - t_step:.1f}s")
         # Increment ID for the next filler recipe
         current_filler_id += 1
-            
-        step_logs.append(f"{f_type}(ID:{current_filler_id}):{time.time() - t_step:.1f}s")
-        # Increment ID for the next filler recipe
-        current_filler_id += 1
 
     # 3. Integration of final structure and creation of metadata
     # Integrate final structure and perform cleanup/interface separation
