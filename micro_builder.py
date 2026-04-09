@@ -573,12 +573,12 @@ def apply_brush_and_write(comp_grid, backbone, radius, physics_mode='thermal', s
         # Electrical/Mechanics mode: The main body is unconditionally maintained
         comp_grid[gz, gy, gx] = filler_id
         
-        # Count the shell dilated by 2 voxels
+        # Count the shell dilated by (tunnel_radius) voxels
         if shell_count_grid is not None:
-            size_sh = int((radius + 2) * 2 + 2)
+            size_sh = int((radius + tunnel_radius) * 2 + 2)
             z_sh, y_sh, x_sh = np.indices((size_sh, size_sh, size_sh))
             cz_sh, cy_sh, cx_sh = size_sh//2, size_sh//2, size_sh//2
-            shell_brush_mask = (z_sh - cz_sh)**2 + (y_sh - cy_sh)**2 + (x_sh - cx_sh)**2 <= (radius + 2)**2
+            shell_brush_mask = (z_sh - cz_sh)**2 + (y_sh - cy_sh)**2 + (x_sh - cx_sh)**2 <= (radius + tunnel_radius)**2
             local_z_sh, local_y_sh, local_x_sh = np.where(shell_brush_mask)
             
             shell_voxels = set()
@@ -727,7 +727,8 @@ def _check_and_place_fast(comp_grid, tpms_grid, cz, cy, cx,
 def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_frac,
                          max_attempts=1000000, fallback_func=None, desc="",
                          protrusion_coef=0.0025, log_file=None,
-                         physics_mode='thermal', shell_count_grid=None, filler_id=4, inter_id=3):
+                         physics_mode='thermal', shell_count_grid=None,
+                         filler_id=4, inter_id=3, tunnel_radius=2):
     
     # Initialize RNG inside the function for safety if not using global
     rng = np.random.default_rng()
@@ -786,8 +787,10 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
 
                 # Shell extraction for electrical mode
                 if not is_thermal and shell_count_grid is not None:
-                    rz, ry, rx = np.ogrid[-2:3, -2:3, -2:3]
-                    shell_brush = rx**2 + ry**2 + rz**2 <= 2**2
+                    rz, ry, rx = np.ogrid[-tunnel_radius:tunnel_radius+1, 
+                                          -tunnel_radius:tunnel_radius+1, 
+                                          -tunnel_radius:tunnel_radius+1]
+                    shell_brush = rx**2 + ry**2 + rz**2 <= tunnel_radius**2
                     dilated = binary_dilation(raw_stamp > 0, structure=shell_brush)
                     shell_coords = np.argwhere(dilated)
                     shell_offsets = shell_coords - center
