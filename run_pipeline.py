@@ -24,6 +24,7 @@ from micro_builder import (
     get_rigid_cylinder_mask,
     get_flexible_fiber_mask,
     get_agglomerate_mask,
+    get_staggered_flakes_mask,
     finalize_microstructure,
     export_chfem_inputs,
     export_visualization_vti,
@@ -295,7 +296,19 @@ def main():
                                  f_vol, protrusion_coef=protrusion_coef, desc=f"Agglomerate(n={int(opts.get('num_fibers', 5))})", 
                                  log_file=build_log, physics_mode=args.physics_mode, shell_count_grid=shell_count_grid,
                                  filler_id=current_filler_id, inter_id=primary_inter_id)
-        
+
+        elif f_type == "staggered":
+            kwargs = {
+                'radius': opts.get('radius', 15),
+                'layer_thickness': opts.get('layer_thickness', 2),
+                'min_layers': opts.get('min_layers', 1),
+                'max_layers': opts.get('max_layers', 4),
+                'max_offset_pct': opts.get('max_offset_pct', 30)
+            }
+            place_fillers_hybrid(comp_grid, tpms_grid, get_staggered_flakes_mask, kwargs, f_vol, 
+                                 protrusion_coef=protrusion_coef, desc="Staggered Flakes", log_file=build_log,
+                                 physics_mode=args.physics_mode, shell_count_grid=shell_count_grid, 
+                                 filler_id=current_filler_id, inter_id=primary_inter_id)
         step_logs.append(f"{f_type}(ID:{current_filler_id}):{time.time() - t_step:.1f}s")
         # Increment ID for the next filler recipe
         current_filler_id += 1
