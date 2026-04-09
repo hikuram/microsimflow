@@ -187,8 +187,9 @@ def main():
     valid_recipes = [r for r in args.recipe if float(r.split(':')[1]) > 0]
     
     # Fixed ID assignment based on new micro_builder logic
-    primary_inter_id = 2
-    secondary_inter_id = 3
+    secondary_inter_id = 2
+    primary_inter_id = 3
+    filler_start_id = 4
     filler_start_id = 4
     current_filler_id = filler_start_id
     
