@@ -142,19 +142,25 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--size", type=int, default=200)
     parser.add_argument("--voxel_size", type=float, default=1e-8)
-    parser.add_argument("--bg_type", type=str, default="gyroid", choices=["single", "gyroid", "sea_island", "island_sea", "lamellar", "cylinder", "bcc"])
+    parser.add_argument("--bg_type", type=str, default="gyroid",
+                        choices=["single", "gyroid", "sea_island", "island_sea", "lamellar", "cylinder", "bcc"])
     parser.add_argument("--phaseA_ratio", type=float, default=0.57)
     parser.add_argument("--recipe", nargs='+', required=True)
     parser.add_argument("--basename", type=str, default="model")
     parser.add_argument("--csv_log", type=str, default="comparison_results.csv")
-    parser.add_argument("--physics_mode", type=str, default="thermal", choices=["thermal", "electrical", "mechanics"])
-    
-    parser.add_argument("--solver", type=str, default="both", choices=["chfem", "puma", "both"], help="Solver for homogenisation")
+    parser.add_argument("--physics_mode", type=str, default="thermal",
+                        choices=["thermal", "electrical", "mechanics"])
+    parser.add_argument("--solver", type=str, default="both",
+                        choices=["chfem", "puma", "both"], help="Solver for homogenisation")
     parser.add_argument("--prop_A", type=str, default=None, help="Property for Polymer A")
     parser.add_argument("--prop_B", type=str, default=None, help="Property for Polymer B")
     parser.add_argument("--prop_inter", type=str, default=None, help="Property for Primary Contact/Tunnel phase")
     parser.add_argument("--prop_inter2", type=str, default=None, help="Property for Secondary Contact/Tunnel phase")
     parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")
+    parser.add_argument("--tunnel_radius", type=int, default=2, 
+                        help="Radius in voxels for nearest-neighbor (tunneling) detection")
+    parser.add_argument("--contact_radius", type=int, default=1, 
+                        help="Radius in voxels for primary contact interface thickness")
     return parser.parse_args()
 
 
@@ -264,7 +270,8 @@ def main():
             'physics_mode': args.physics_mode,
             'shell_count_grid': shell_count_grid,
             'filler_id': current_filler_id,
-            'inter_id': primary_inter_id
+            'inter_id': primary_inter_id, 
+            'tunnel_radius': args.tunnel_radius
         }
         
         if f_type == "flake":
@@ -335,7 +342,8 @@ def main():
         comp_grid, tpms_grid, shell_count_grid, args.physics_mode, 
         primary_inter_id=primary_inter_id, 
         secondary_inter_id=secondary_inter_id, 
-        filler_start_id=filler_start_id
+        filler_start_id=filler_start_id,
+        contact_radius=args.contact_radius
     )
     phase_stats = summarize_phase_fractions(
         final_grid, 
