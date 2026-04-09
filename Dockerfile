@@ -45,6 +45,7 @@ RUN micromamba install -y -n base -c conda-forge \
     matplotlib \
     pandas \
     pyvista \
+    numba \
     && micromamba clean --all --yes
 
 # Physically remove Matplotlib font cache and safely rebuild it using the standard method
