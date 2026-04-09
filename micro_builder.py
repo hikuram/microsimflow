@@ -180,7 +180,7 @@ def create_agglomerate_mask(num_fibers, length, radius, max_bend_deg=90, max_tot
             
     return crop_mask_to_bbox(combined_mask)
 
-def create_staggered_flakes_mask(radius, layer_thickness=2, min_layers=1, max_layers=5, max_offset_pct=30):
+def create_staggered_flakes_mask(radius=15, layer_thickness=2, min_layers=1, max_layers=4, max_offset_pct=30):
     """
     Generate a compound stamp of staggered (stacked and offset) flake-like platelets.
     Useful for simulating face-to-face contact and agglomeration in random sequential adsorption.
@@ -226,6 +226,9 @@ def get_flexible_fiber_mask(length=90, radius=2, max_bend_deg=90, max_total_bend
 
 def get_agglomerate_mask(num_fibers=5, length=90, radius=2, max_bend_deg=90, max_total_bends=10, physics_mode='thermal'):
     return create_agglomerate_mask(num_fibers, length, radius, max_bend_deg, max_total_bends, physics_mode)
+
+def get_staggered_flakes_mask(radius=15, layer_thickness=2, min_layers=1, max_layers=4, max_offset_pct=30, physics_mode='thermal'):
+    return create_staggered_flakes_mask(radius, layer_thickness, min_layers, max_layers, max_offset_pct)
 
 # =========================================================
 # A. Background Phase (Polymer Matrix) Generation Module
