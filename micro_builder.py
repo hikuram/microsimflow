@@ -133,7 +133,7 @@ def _create_agglom_single_fiber_mask(length, radius, max_bend_deg, max_total_ben
     mask = binary_dilation(mask, structure=brush)
     return mask
 
-def create_agglomerate_mask(num_fibers, length, radius, max_bend_deg=90, max_total_bends=10, physics_mode='thermal', filler_id=4, inter_id=2):
+def create_agglomerate_mask(num_fibers, length, radius, max_bend_deg=90, max_total_bends=10, physics_mode='thermal', filler_id=4, inter_id=3):
     """Generate an agglomerate mask of multiple entangled fibers, crop, and return"""
     # The fiber grows a max of length/2 from the center, so box size is scaled down based on length
     box_size = int(length + radius * 2 + 5)
@@ -476,7 +476,7 @@ def grow_adaptive_fiber(tpms_grid, comp_grid, start_pos, length, overlap_mode,
         
     return backbone
     
-def apply_brush_and_write(comp_grid, backbone, radius, physics_mode='thermal', shell_count_grid=None, filler_id=4, inter_id=2):
+def apply_brush_and_write(comp_grid, backbone, radius, physics_mode='thermal', shell_count_grid=None, filler_id=4, inter_id=3):
     shape = comp_grid.shape
     size = int(radius * 2 + 2)
     z, y, x = np.indices((size, size, size))
@@ -534,7 +534,7 @@ def apply_brush_and_write(comp_grid, backbone, radius, physics_mode='thermal', s
 def place_adaptive_fibers(comp_grid, tpms_grid, target_vol_frac, length, radius,
                           max_bend_deg=45, max_total_bends=10, max_retries_per_step=10, max_protrusion_ratio=0.1,
                           min_backbone_ratio=0.9, max_attempts=1000000, desc="", log_file=None,
-                          physics_mode='thermal', shell_count_grid=None, filler_id=4, inter_id=2):
+                          physics_mode='thermal', shell_count_grid=None, filler_id=4, inter_id=3):
     shape = comp_grid.shape
     target_voxels = int(np.prod(shape) * target_vol_frac)
     valid_z, valid_y, valid_x = np.where(tpms_grid == 0)
@@ -662,7 +662,7 @@ def _check_and_place_fast(comp_grid, tpms_grid, cz, cy, cx,
 def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_frac,
                          max_attempts=1000000, fallback_func=None, desc="",
                          protrusion_coef=0.0025, log_file=None,
-                         physics_mode='thermal', shell_count_grid=None, filler_id=4, inter_id=2):
+                         physics_mode='thermal', shell_count_grid=None, filler_id=4, inter_id=3):
     
     # Initialize RNG inside the function for safety if not using global
     rng = np.random.default_rng()
@@ -846,7 +846,7 @@ def _cleanup_small_components(mask, min_component_size=2):
     return keep[labeled]
 
 def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics_mode='thermal', 
-                            primary_inter_id=2, secondary_inter_id=3, filler_start_id=4,
+                            primary_inter_id=3, secondary_inter_id=3, filler_start_id=4,
                             sliver_fill_iters=1, spike_min_neighbors=2, min_interface_component_size=2):
     """
     Combine background and filler phases.
@@ -930,7 +930,7 @@ def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics
 
     return final_grid
 
-def summarize_phase_fractions(final_grid, primary_inter_id=2, secondary_inter_id=3, filler_start_id=4):
+def summarize_phase_fractions(final_grid, primary_inter_id=3, secondary_inter_id=3, filler_start_id=4):
     """Aggregate the volume fraction of each phase"""
     total_voxels = final_grid.size
     max_id = final_grid.max() 
