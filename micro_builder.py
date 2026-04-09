@@ -180,6 +180,47 @@ def create_agglomerate_mask(num_fibers, length, radius, max_bend_deg=90, max_tot
             
     return crop_mask_to_bbox(combined_mask)
 
+def create_staggered_flakes_mask(radius, layer_thickness=2, min_layers=1, max_layers=5, max_offset_pct=30):
+    """
+    Generate a compound stamp of staggered (stacked and offset) flake-like platelets.
+    Useful for simulating face-to-face contact and agglomeration in random sequential adsorption.
+    """
+    # Initialize random number generator locally
+    rng = np.random.default_rng()
+    # Determine the number of layers for this specific aggregate
+    num_layers = rng.integers(min_layers, max_layers + 1)
+    # Calculate maximum absolute offset in pixels
+    max_offset_px = radius * (max_offset_pct / 100.0)
+    # Pre-allocate a bounding box large enough to hold the worst-case random walk
+    max_spread = radius + num_layers * max_offset_px
+    box_size_xy = int(math.ceil(max_spread * 2)) + 4
+    box_size_z = num_layers * layer_thickness
+    # Initialize an empty 3D boolean array (canvas)
+    stamp = np.zeros((box_size_z, box_size_xy, box_size_xy), dtype=bool)
+    # Set the initial center coordinate for the first layer (bottom)
+    current_cy, current_cx = box_size_xy / 2.0, box_size_xy / 2.0
+    # Create coordinate grids for fast vectorized distance calculation
+    y, x = np.ogrid[:box_size_xy, :box_size_xy]
+    
+    for i in range(num_layers):
+        if i > 0:
+            # Random walk: shift the center for subsequent layers
+            angle = rng.uniform(0, 2 * np.pi)
+            dist = rng.uniform(0, max_offset_px)
+            current_cy += dist * np.sin(angle)
+            current_cx += dist * np.cos(angle)
+            
+        # Create a boolean mask for the current circular flake
+        disk_mask = (y - current_cy)**2 + (x - current_cx)**2 <= radius**2
+        
+        # Write the flake into the corresponding Z-height slice
+        z_start = i * layer_thickness
+        z_end = (i + 1) * layer_thickness
+        stamp[z_start:z_end, disk_mask] = True
+        
+    # Trim empty margins before returning to optimize placement checks
+    return crop_mask_to_bbox(stamp)
+
 def get_flexible_fiber_mask(length=90, radius=2, max_bend_deg=90, max_total_bends=10, physics_mode='thermal'):
     return crop_mask_to_bbox(create_fiber_mask(length, radius, max_bend_deg, max_total_bends))
 
@@ -318,13 +359,34 @@ def get_flake_mask(radius, thickness, physics_mode='thermal'):
     """Flake-shaped filler"""
     size = int(radius * 2 + 4)
     Xr, Yr, Zr = create_rotated_grid((size, size, size), rng.random(3) * 2 * np.pi)
-    return (Xr**2 + Yr**2) / radius**2 + (Zr**2) / (thickness/2)**2 <= 1.0
+    return (Xr**2 + Yr**2 <= radius**2) & (np.abs(Zr) <= thickness/2)
 
 def get_rigid_cylinder_mask(length, radius, physics_mode='thermal'):
-    """Rigid short fiber"""
-    size = int(length + radius * 2 + 4)
-    Xr, Yr, Zr = create_rotated_grid((size, size, size), rng.random(3) * 2 * np.pi)
-    return (Xr**2 + Yr**2 <= radius**2) & (np.abs(Zr) <= length/2)
+    """
+    Rigid short fiber 
+    (Implemented as a spherocylinder/capsule via dilation to prevent voxel aliasing)
+    """
+    size = int(length + radius * 2 + 5)
+    mask = np.zeros((size, size, size), dtype=bool)
+    
+    vec = rng.standard_normal(3)
+    vec /= np.linalg.norm(vec)
+    cz, cy, cx = size // 2, size // 2, size // 2
+    start_pos = np.array([cz, cy, cx], dtype=float) - vec * (length / 2)
+    
+    backbone = []
+    current_pos = start_pos
+    for _ in range(int(length)):
+        iz, iy, ix = np.round(current_pos).astype(int)
+        mask[iz, iy, ix] = True
+        current_pos += vec
+        
+    # Dilation
+    rz, ry, rx = np.ogrid[-radius:radius+1, -radius:radius+1, -radius:radius+1]
+    brush = rx**2 + ry**2 + rz**2 <= radius**2
+    mask = binary_dilation(mask, structure=brush)
+    
+    return crop_mask_to_bbox(mask)
 
 def calculate_protrusion_limit(filler_voxels, total_voxels, half_protrusion_vol_ratio=0.0025):
     """Calculation of adaptive protrusion tolerance based on half-value volume ratio model"""
