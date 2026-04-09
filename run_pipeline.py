@@ -318,6 +318,18 @@ def main():
                 'max_offset_pct': opts.get('max_offset_pct', 30)
             }
             place_fillers_hybrid(**common_args, filler_func=get_staggered_flakes_mask, kwargs=kwargs, desc="Staggered Flakes")
+
+        
+        elif f_type == "adaptfiber":
+            place_adaptive_fibers(
+                comp_grid, tpms_grid, f_vol,
+                radius=opts.get('radius', 2),
+                max_length=opts.get('length', 100),
+                physics_mode=args.physics_mode,
+                shell_count_grid=shell_count_grid,
+                filler_id=current_filler_id,
+                inter_id=primary_inter_id
+            )
             
         step_logs.append(f"{f_type}(ID:{current_filler_id}):{time.time() - t_step:.1f}s")
         # Increment ID for the next filler recipe
