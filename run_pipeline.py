@@ -236,7 +236,7 @@ def main():
     shell_count_grid = np.zeros_like(comp_grid) if args.physics_mode in ['electrical', 'mechanics'] else None
     step_logs.append(f"BG({args.bg_type}):{time.time() - t0:.1f}s")
 
-    # 2. Filler placement based on recipe
+# 2. Filler placement based on recipe
     for step in valid_recipes:
         parts = step.split(':')
         f_type = parts[0]
@@ -255,11 +255,7 @@ def main():
         protrusion_coef = opts.pop('protrusion_coef', 0.0025)
         t_step = time.time()
         
-        f_type = step['type']
-        f_vol = step['vol']
-        opts = step['opts']
-
-        common_args = {
+        hybrid_args = {
             'comp_grid': comp_grid,
             'tpms_grid': tpms_grid,
             'target_vol_frac': f_vol,
@@ -270,28 +266,35 @@ def main():
             'filler_id': current_filler_id,
             'inter_id': primary_inter_id
         }
-
+        
         if f_type == "flake":
             kwargs = {
-                'radius': opts.get('radius', 15),
+                'radius': opts.get('radius', 10),
                 'thickness': opts.get('thickness', 2)
             }
-            place_fillers_hybrid(**common_args, filler_func=get_flake_mask, kwargs=kwargs, desc="Flakes")
-
+            place_fillers_hybrid(filler_func=get_flake_mask, kwargs=kwargs, desc="Flake", **hybrid_args)
+                                 
         elif f_type == "sphere":
             kwargs = {
                 'radius': opts.get('radius', 5)
             }
-            place_fillers_hybrid(**common_args, filler_func=get_sphere_mask, kwargs=kwargs, desc="Spheres")
-
-        elif f_type == "cylinder":
+            place_fillers_hybrid(filler_func=get_sphere_mask, kwargs=kwargs, desc="Sphere", **hybrid_args)
+                                 
+        elif f_type == "rigidfiber":
             kwargs = {
-                'length': opts.get('length', 50),
-                'radius': opts.get('radius', 3),
-                'physics_mode': args.physics_mode  # 円柱はモードによる調整があるため
+                'length': opts.get('length', 60),
+                'radius': opts.get('radius', 2)
             }
-            place_fillers_hybrid(**common_args, filler_func=get_rigid_cylinder_mask, kwargs=kwargs, desc="Rigid Cylinders")
-
+            place_fillers_hybrid(filler_func=get_rigid_cylinder_mask, kwargs=kwargs, desc="Rigid Fiber", **hybrid_args)
+                                 
+        elif f_type == "adaptfiber":
+            place_adaptive_fibers(comp_grid=comp_grid, tpms_grid=tpms_grid, target_vol_frac=f_vol,
+                                  length=opts.get('length', 90), radius=opts.get('radius', 2),
+                                  max_bend_deg=opts.get('max_bend_deg', 45), max_total_bends=opts.get('max_total_bends', 5),
+                                  min_backbone_ratio=opts.get('min_backbone_ratio', 0.9), max_protrusion_ratio=protrusion_coef,
+                                  log_file=build_log, physics_mode=args.physics_mode, shell_count_grid=shell_count_grid,
+                                  filler_id=current_filler_id, inter_id=primary_inter_id)
+                                  
         elif f_type == "flexfiber":
             kwargs = {
                 'length': opts.get('length', 90),
@@ -299,16 +302,19 @@ def main():
                 'max_bend_deg': opts.get('max_bend_deg', 90),
                 'max_total_bends': opts.get('max_total_bends', 10)
             }
-            place_fillers_hybrid(**common_args, filler_func=get_flexible_fiber_mask, kwargs=kwargs, desc="Flexible Fibers")
-
+            place_fillers_hybrid(filler_func=get_flexible_fiber_mask, kwargs=kwargs, desc="Flexible Fibers", **hybrid_args)
+                                 
         elif f_type == "agglomerate":
             kwargs = {
-                'radius': opts.get('radius', 10),
-                'num_spheres': opts.get('num_spheres', 15),
-                'spread': opts.get('spread', 5)
+                'num_fibers': opts.get('num_fibers', 5),
+                'length': opts.get('length', 90),
+                'radius': opts.get('radius', 2),
+                'max_bend_deg': opts.get('max_bend_deg', 90),
+                'max_total_bends': opts.get('max_total_bends', 10)
             }
-            place_fillers_hybrid(**common_args, filler_func=get_agglomerate_mask, kwargs=kwargs, desc="Agglomerates")
-
+            desc_str = f"Agglomerate(n={int(opts.get('num_fibers', 5))})"
+            place_fillers_hybrid(filler_func=get_agglomerate_mask, kwargs=kwargs, desc=desc_str, **hybrid_args)
+                                 
         elif f_type == "staggered":
             kwargs = {
                 'radius': opts.get('radius', 15),
@@ -317,19 +323,11 @@ def main():
                 'max_layers': opts.get('max_layers', 4),
                 'max_offset_pct': opts.get('max_offset_pct', 30)
             }
-            place_fillers_hybrid(**common_args, filler_func=get_staggered_flakes_mask, kwargs=kwargs, desc="Staggered Flakes")
-
+            place_fillers_hybrid(filler_func=get_staggered_flakes_mask, kwargs=kwargs, desc="Staggered Flakes", **hybrid_args)
         
-        elif f_type == "adaptfiber":
-            place_adaptive_fibers(
-                comp_grid, tpms_grid, f_vol,
-                radius=opts.get('radius', 2),
-                max_length=opts.get('length', 100),
-                physics_mode=args.physics_mode,
-                shell_count_grid=shell_count_grid,
-                filler_id=current_filler_id,
-                inter_id=primary_inter_id
-            )
+        step_logs.append(f"{f_type}(ID:{current_filler_id}):{time.time() - t_step:.1f}s")
+        # Increment ID for the next filler recipe
+        current_filler_id += 1
             
         step_logs.append(f"{f_type}(ID:{current_filler_id}):{time.time() - t_step:.1f}s")
         # Increment ID for the next filler recipe
