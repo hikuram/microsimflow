@@ -915,7 +915,8 @@ def _cleanup_small_components(mask, min_component_size=2):
 
 def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics_mode='thermal', 
                             primary_inter_id=3, secondary_inter_id=3, filler_start_id=4,
-                            sliver_fill_iters=1, spike_min_neighbors=2, min_interface_component_size=2):
+                            sliver_fill_iters=1, spike_min_neighbors=2, min_interface_component_size=2,
+                            contact_radius=1):
     """
     Combine background and filler phases.
     For electrical/mechanics modes, cleans up the unified interface, then splits it 
@@ -961,11 +962,11 @@ def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics
         filler_mask = (final_grid >= filler_start_id)
         
         if np.any(unified_interface_mask) and np.any(filler_mask):
-            # Dilate filler by exactly 1 voxel in 6-neighborhood
+            # Dilate filler (contact_radius) times by exactly 1 voxel in 6-neighborhood
             struct_1voxel = generate_binary_structure(3, 1)
-            dilated_filler = binary_dilation(filler_mask, structure=struct_1voxel)
+            dilated_filler = binary_dilation(filler_mask, structure=struct_1voxel, iterations=contact_radius)
             
-            # Secondary interface is the part of the unified interface NOT touched by the 1-voxel dilation
+            # Secondary interface is the part of the unified interface NOT touched by the dilation
             secondary_mask = unified_interface_mask & (~dilated_filler)
             
             # Update the grid
