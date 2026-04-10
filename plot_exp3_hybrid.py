@@ -16,7 +16,7 @@ plt.scatter(df_clean['v_flk'] * 100, df_clean['K_eff'], color='#009E73', alpha=0
 
 # Connect the mean values with a line
 mean_df = df_clean.groupby('v_flk')['K_eff'].mean().reset_index()
-plt.plot(mean_df['v_flk'] * 100, mean_df['K_eff'], color='#000000', marker='o', markersize=8, linewidth=2.5, label='Mean K_eff (Total Vf=7%)')
+plt.plot(mean_df['v_flk'] * 100, mean_df['K_eff'], color='#000000', marker='o', markersize=8, linewidth=2.5, label='Mean K_eff (Total Vf=8%)')
 
 plt.xlabel('Flake Volume Fraction (%)')
 plt.ylabel('Effective Conductivity (S/m)')
@@ -28,7 +28,7 @@ ax1 = plt.gca()
 ax2 = ax1.twiny()
 ax2.set_xlim(ax1.get_xlim())
 ax2.set_xticks(ax1.get_xticks())
-ax2.set_xticklabels([f"{7.0 - x:.1f}" for x in ax1.get_xticks()])
+ax2.set_xticklabels([f"{8.0 - x:.1f}" for x in ax1.get_xticks()])
 ax2.set_xlabel('Fiber Volume Fraction (%)')
 
 ax1.grid(True, which="both", ls="--", alpha=0.5)
