@@ -1,6 +1,6 @@
 import math
 import numpy as np
-from scipy.ndimage import binary_dilation, convolve, label, generate_binary_structure
+from scipy.ndimage import binary_dilation, convolve, label, generate_binary_structure, affine_transform
 from tqdm.auto import tqdm
 import pyvista as pv
 from numba import njit
@@ -334,8 +334,8 @@ def build_island_sea_grid(grid_size, island_radius=8, target_phaseA_ratio=0.7):
 # B. Rigid Stamp Module (Sphere, Flake, Rigid Cylinder)
 # =========================================================
 
-def create_rotated_grid(shape, angles):
-    """Helper to create a 3D grid and rotate it by specified Euler angles"""
+def create_rotated_grid_with_normal(shape, angles):
+    """Helper to create a 3D grid and return both the grid and its Z-axis normal vector"""
     z, y, x = np.indices(shape)
     cz, cy, cx = shape[0]//2, shape[1]//2, shape[2]//2
     Z = z - cz; Y = y - cy; X = x - cx
@@ -346,26 +346,37 @@ def create_rotated_grid(shape, angles):
     R = Rz @ Ry @ Rx
     coords = np.stack([Z.ravel(), Y.ravel(), X.ravel()])
     rotated_coords = R @ coords
-    return rotated_coords[2,:].reshape(shape), rotated_coords[1,:].reshape(shape), rotated_coords[0,:].reshape(shape)
+    
+    # The normal vector corresponds to the original Z-axis (1,0,0 in Z,Y,X format) rotated by R
+    normal_vector = R @ np.array([1, 0, 0])
+    
+    return rotated_coords[2,:].reshape(shape), rotated_coords[1,:].reshape(shape), rotated_coords[0,:].reshape(shape), normal_vector
 
 def get_sphere_mask(radius, physics_mode='thermal'):
     """Perfect sphere filler"""
     size = int(radius * 2 + 2)
     z, y, x = np.indices((size, size, size))
     cz, cy, cx = size//2, size//2, size//2
-    return (z - cz)**2 + (y - cy)**2 + (x - cx)**2 <= radius**2
+    mask = (z - cz)**2 + (y - cy)**2 + (x - cx)**2 <= radius**2
+    geom_data = {'base_type': 'sphere', 'radius': radius}
+    return mask, geom_data
 
 def get_flake_mask(radius, thickness, physics_mode='thermal'):
     """Flake-shaped filler"""
     size = int(radius * 2 + 4)
-    Xr, Yr, Zr = create_rotated_grid((size, size, size), rng.random(3) * 2 * np.pi)
-    return (Xr**2 + Yr**2 <= radius**2) & (np.abs(Zr) <= thickness/2)
+    angles = rng.random(3) * 2 * np.pi
+    Xr, Yr, Zr, normal = create_rotated_grid_with_normal((size, size, size), angles)
+    mask = (Xr**2 + Yr**2 <= radius**2) & (np.abs(Zr) <= thickness/2)
+    geom_data = {
+        'base_type': 'flake', 
+        'radius': radius, 
+        'thickness': thickness,
+        'normal': normal # [Z, Y, X] vector
+    }
+    return crop_mask_to_bbox(mask), geom_data
 
 def get_rigid_cylinder_mask(length, radius, physics_mode='thermal'):
-    """
-    Rigid short fiber 
-    (Implemented as a spherocylinder/capsule via dilation to prevent voxel aliasing)
-    """
+    """Rigid short fiber"""
     size = int(length + radius * 2 + 5)
     mask = np.zeros((size, size, size), dtype=bool)
     
@@ -379,14 +390,22 @@ def get_rigid_cylinder_mask(length, radius, physics_mode='thermal'):
     for _ in range(int(length)):
         iz, iy, ix = np.round(current_pos).astype(int)
         mask[iz, iy, ix] = True
+        backbone.append([current_pos[0], current_pos[1], current_pos[2]])
         current_pos += vec
         
-    # Dilation
     rz, ry, rx = np.ogrid[-radius:radius+1, -radius:radius+1, -radius:radius+1]
     brush = rx**2 + ry**2 + rz**2 <= radius**2
     mask = binary_dilation(mask, structure=brush)
     
-    return crop_mask_to_bbox(mask)
+    backbone_arr = np.array(backbone)
+    local_backbone = backbone_arr - np.array([cz, cy, cx])
+    
+    geom_data = {
+        'base_type': 'fiber',
+        'local_backbone': local_backbone,
+        'radius': radius
+    }
+    return crop_mask_to_bbox(mask), geom_data
 
 def calculate_protrusion_limit(filler_voxels, total_voxels, half_protrusion_vol_ratio=0.0025):
     """Calculation of adaptive protrusion tolerance based on half-value volume ratio model"""
@@ -725,8 +744,7 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
                          max_attempts=1000000, fallback_func=None, desc="",
                          protrusion_coef=0.0025, log_file=None,
                          physics_mode='thermal', shell_count_grid=None,
-                         filler_id=4, inter_id=3, tunnel_radius=2):
-    
+                         filler_id=4, inter_id=3, tunnel_radius=2, placement_registry=None):
     # Initialize RNG inside the function for safety if not using global
     rng = np.random.default_rng()
     
@@ -765,7 +783,13 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
 
             # Update cache for rigid filler geometries
             if stamp_offsets is None or cache_reuse_count >= MAX_CACHE_REUSE:
-                raw_stamp = filler_func(**kwargs)
+                result = filler_func(**kwargs)
+                # Handle the new tuple return type (mask, geom_data)
+                if isinstance(result, tuple):
+                    raw_stamp, current_geom_data = result
+                else:
+                    raw_stamp = result
+                    current_geom_data = {'base_type': 'unknown'}
                 
                 # For placement judgment: Extract only the occupied coordinates of space
                 coords = np.argwhere(raw_stamp > 0)
@@ -821,11 +845,20 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
                 sty = (shell_offsets[:, 1] + cy) % shape[1]
                 stx = (shell_offsets[:, 2] + cx) % shape[2]
                 shell_count_grid[stz, sty, stx] += 1
-
+            
             # Reset cache and fails only on success
             stamp_offsets = None 
             consecutive_fails = 0
             
+            # Record successful placement geometry
+            if placement_registry is not None:
+                placement_registry.append({
+                    'geom': current_geom_data,
+                    'center': (cz, cy, cx),
+                    'filler_id': filler_id,
+                    'inter_id': inter_id
+                })
+
             # Update progress
             current_total = np.sum(comp_grid >= 2)
             added_voxels = current_total - placed_voxels
@@ -1072,3 +1105,185 @@ def export_chfem_inputs(final_grid, base_filename="model", voxel_size=1e-8, phys
 """
     with open(nf_filename, 'w') as f:
         f.write(nf_content)
+
+# =========================================================
+# F. Affine Deformation & Rendering Module
+# =========================================================
+
+def apply_background_deformation(grid, stretch_ratio=1.0, poisson_ratio=0.4):
+    """Applies affine deformation ONLY to the continuous polymer background."""
+    from scipy.ndimage import affine_transform
+    if stretch_ratio == 1.0:
+        return grid.copy()
+
+    lam = stretch_ratio
+    lam_nu = lam ** (-poisson_ratio)
+    
+    nz, ny, nx = grid.shape
+    new_shape = (
+        max(1, int(round(nz * lam_nu))),
+        max(1, int(round(ny * lam_nu))),
+        max(1, int(round(nx * lam)))
+    )
+
+    # Matrix for inverse mapping (Z, Y, X order)
+    matrix = np.array([
+        [1.0 / lam_nu, 0.0, 0.0],
+        [0.0, 1.0 / lam_nu, 0.0],
+        [0.0, 0.0, 1.0 / lam]
+    ])
+
+    return affine_transform(grid, matrix=matrix, output_shape=new_shape, order=0, mode='wrap')
+
+def render_deformed_fillers(placement_registry, base_shape, stretch_ratio, poisson_ratio, is_thermal, comp_grid, shell_count_grid, tunnel_radius=2):
+    """Renders rigid fillers into the deformed configuration."""
+    lam = stretch_ratio
+    lam_nu = stretch_ratio ** (-poisson_ratio)
+    new_shape = comp_grid.shape
+
+    for item in tqdm(placement_registry, desc=f"Rendering Fillers (Stretch: {stretch_ratio})"):
+        geom = item['geom']
+        cz, cy, cx = item['center']
+
+        # Affine translation of the center of mass
+        new_cz = int(round(cz * lam_nu)) % new_shape[0]
+        new_cy = int(round(cy * lam_nu)) % new_shape[1]
+        new_cx = int(round(cx * lam)) % new_shape[2]
+
+        if geom['base_type'] == 'sphere':
+            # Spheres only translate, no rotation needed
+            mask, _ = get_sphere_mask(geom['radius'])
+            _paste_mask_to_grid(comp_grid, shell_count_grid, new_cz, new_cy, new_cx, mask, item['filler_id'], item['inter_id'], is_thermal, tunnel_radius)
+
+        elif geom['base_type'] == 'flake':
+            # For surfaces, the normal vector n transforms as n' = F^-T * n
+            # F^-T in (Z, Y, X) order
+            n_orig = geom['normal']
+            n_new = np.array([
+                n_orig[0] * (lam ** poisson_ratio),
+                n_orig[1] * (lam ** poisson_ratio),
+                n_orig[2] / lam
+            ])
+            n_new /= np.linalg.norm(n_new)
+            
+            # Find rotation matrix that aligns [1,0,0] (Z-axis) to n_new
+            z_axis = np.array([1.0, 0.0, 0.0])
+            v = np.cross(z_axis, n_new)
+            c = np.dot(z_axis, n_new)
+            s = np.linalg.norm(v)
+            
+            size = int(geom['radius'] * 2 + 4)
+            Z_idx, Y_idx, X_idx = np.indices((size, size, size))
+            Z_idx = Z_idx - size//2
+            Y_idx = Y_idx - size//2
+            X_idx = X_idx - size//2
+            
+            if s < 1e-6:
+                # Vectors are parallel or anti-parallel
+                R = np.eye(3) if c > 0 else -np.eye(3)
+            else:
+                kmat = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+                R = np.eye(3) + kmat + kmat.dot(kmat) * ((1 - c) / (s ** 2))
+                
+            coords = np.stack([Z_idx.ravel(), Y_idx.ravel(), X_idx.ravel()])
+            rot_coords = R @ coords
+            Zr = rot_coords[0,:].reshape((size, size, size))
+            Yr = rot_coords[1,:].reshape((size, size, size))
+            Xr = rot_coords[2,:].reshape((size, size, size))
+            
+            mask = (Xr**2 + Yr**2 <= geom['radius']**2) & (np.abs(Zr) <= geom['thickness']/2)
+            mask = crop_mask_to_bbox(mask)
+            _paste_mask_to_grid(comp_grid, shell_count_grid, new_cz, new_cy, new_cx, mask, item['filler_id'], item['inter_id'], is_thermal, tunnel_radius)
+
+        elif geom['base_type'] == 'fiber':
+            # For lines, vector v transforms as v' = F * v
+            local_bb = geom['local_backbone']
+            diffs = np.diff(local_bb, axis=0)
+            diffs_def = np.zeros_like(diffs, dtype=float)
+            diffs_def[:, 0] = diffs[:, 0] * lam_nu # Z
+            diffs_def[:, 1] = diffs[:, 1] * lam_nu # Y
+            diffs_def[:, 2] = diffs[:, 2] * lam    # X
+
+            orig_lens = np.linalg.norm(diffs, axis=1)
+            def_lens = np.linalg.norm(diffs_def, axis=1)
+            
+            valid = def_lens > 1e-8
+            diffs_def[valid] = (diffs_def[valid] / def_lens[valid, None]) * orig_lens[valid, None]
+
+            new_bb = np.zeros((len(local_bb), 3), dtype=float)
+            new_bb[1:] = np.cumsum(diffs_def, axis=0)
+            new_bb -= np.mean(new_bb, axis=0)
+
+            _draw_fiber_to_grid(comp_grid, shell_count_grid, new_cz, new_cy, new_cx, new_bb, geom['radius'], item['filler_id'], item['inter_id'], is_thermal, tunnel_radius)
+
+def _paste_mask_to_grid(comp_grid, shell_count_grid, cz, cy, cx, mask, filler_id, inter_id, is_thermal, tunnel_radius):
+    """Helper to paste a generic boolean mask (flakes/spheres) into the grid"""
+    shape = comp_grid.shape
+    coords = np.argwhere(mask > 0)
+    if len(coords) == 0: return
+    
+    center = np.array(mask.shape) // 2
+    offsets = coords - center
+    
+    gz = (offsets[:, 0] + cz) % shape[0]
+    gy = (offsets[:, 1] + cy) % shape[1]
+    gx = (offsets[:, 2] + cx) % shape[2]
+    
+    if is_thermal:
+        contact = (comp_grid[gz, gy, gx] >= 2)
+        comp_grid[gz[contact], gy[contact], gx[contact]] = inter_id
+        comp_grid[gz[~contact], gy[~contact], gx[~contact]] = filler_id
+    else:
+        comp_grid[gz, gy, gx] = filler_id
+        if shell_count_grid is not None:
+            struct = generate_binary_structure(3, 1)
+            dilated_mask = binary_dilation(mask, structure=struct, iterations=tunnel_radius)
+            shell_coords = np.argwhere(dilated_mask)
+            sh_offsets = shell_coords - center
+            sz = (sh_offsets[:, 0] + cz) % shape[0]
+            sy = (sh_offsets[:, 1] + cy) % shape[1]
+            sx = (sh_offsets[:, 2] + cx) % shape[2]
+            shell_count_grid[sz, sy, sx] += 1
+
+def _draw_fiber_to_grid(comp_grid, shell_count_grid, cz, cy, cx, local_bb, radius, filler_id, inter_id, is_thermal, tunnel_radius):
+    """Helper to draw fiber backbone into the grid"""
+    shape = comp_grid.shape
+    size = int(radius * 2 + 2)
+    z, y, x = np.indices((size, size, size))
+    bc_z, bc_y, bc_x = size//2, size//2, size//2
+    brush = (z - bc_z)**2 + (y - bc_y)**2 + (x - bc_x)**2 <= radius**2
+    bz, by, bx = np.where(brush)
+
+    fiber_voxels = set()
+    for pt in local_bb:
+        gz = (bz - bc_z + int(round(pt[0])) + cz) % shape[0]
+        gy = (by - bc_y + int(round(pt[1])) + cy) % shape[1]
+        gx = (bx - bc_x + int(round(pt[2])) + cx) % shape[2]
+        for i in range(len(gz)):
+            fiber_voxels.add((gz[i], gy[i], gx[i]))
+
+    if not fiber_voxels: return
+    fv = np.array(list(fiber_voxels))
+    gz, gy, gx = fv[:, 0], fv[:, 1], fv[:, 2]
+
+    if is_thermal:
+        contact = (comp_grid[gz, gy, gx] >= 2)
+        comp_grid[gz[contact], gy[contact], gx[contact]] = inter_id
+        comp_grid[gz[~contact], gy[~contact], gx[~contact]] = filler_id
+    else:
+        comp_grid[gz, gy, gx] = filler_id
+        if shell_count_grid is not None:
+            size_sh = int((radius + tunnel_radius) * 2 + 2)
+            z_sh, y_sh, x_sh = np.indices((size_sh, size_sh, size_sh))
+            brush_sh = (z_sh - size_sh//2)**2 + (y_sh - size_sh//2)**2 + (x_sh - size_sh//2)**2 <= (radius + tunnel_radius)**2
+            sz, sy, sx = np.where(brush_sh)
+            shell_voxels = set()
+            for pt in local_bb:
+                gz_s = (sz - size_sh//2 + int(round(pt[0])) + cz) % shape[0]
+                gy_s = (sy - size_sh//2 + int(round(pt[1])) + cy) % shape[1]
+                gx_s = (sx - size_sh//2 + int(round(pt[2])) + cx) % shape[2]
+                for i in range(len(gz_s)):
+                    shell_voxels.add((gz_s[i], gy_s[i], gx_s[i]))
+            if shell_voxels:
+                sv = np.array(list(shell_voxels))
+                shell_count_grid[sv[:, 0], sv[:, 1], sv[:, 2]] += 1
