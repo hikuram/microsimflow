@@ -28,7 +28,9 @@ from micro_builder import (
     finalize_microstructure,
     export_chfem_inputs,
     export_visualization_vti,
-    summarize_phase_fractions
+    summarize_phase_fractions,
+    apply_background_deformation,
+    render_deformed_fillers
 )
 
 def parse_chfem_log(log_path):
@@ -161,8 +163,11 @@ def parse_args():
                         help="Radius in voxels for nearest-neighbor (tunneling) detection")
     parser.add_argument("--contact_radius", type=int, default=1, 
                         help="Radius in voxels for primary contact interface thickness")
+    parser.add_argument("--stretch_ratios", type=float, nargs='+', default=[1.0], 
+                        help="List of stretch ratios lambda along X-axis")
+    parser.add_argument("--poisson_ratio", type=float, default=0.4, 
+                        help="Poisson's ratio nu for transverse compression")
     return parser.parse_args()
-
 
 def main():
     args = parse_args()
