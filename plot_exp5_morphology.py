@@ -60,7 +60,7 @@ def plot_exp5_morphology():
             # Place legend outside the last plot
             ax.legend(loc='upper left', bbox_to_anchor=(1.05, 1.0), fontsize=11)
 
-    plt.suptitle("Tutorial Part 1: Morphology Anisotropy vs. Rule of Mixtures\n(Phase A: E=1.0, Phase B: E=10.0)", 
+    plt.suptitle("Tutorial Part 1: Morphology Anisotropy vs. Rule of Mixtures\n(Phase A: E=10.0, Phase B: E=1000.0)", 
                  fontsize=16, y=1.05)
     
     # Save the figure
