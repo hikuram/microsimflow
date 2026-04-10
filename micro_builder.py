@@ -22,210 +22,29 @@ def crop_mask_to_bbox(mask):
     z_max, y_max, x_max = coords.max(axis=0)
     return mask[z_min:z_max+1, y_min:y_max+1, x_min:x_max+1]
 
-def create_fiber_mask(length, radius, max_bend_deg=90, max_total_bends=10):
-    """Generate a mask for a single flexible fiber"""
-    # A space large enough to definitely contain the fiber
-    box_size = int(length * 2 + radius * 2 + 5)
-    mask = np.zeros((box_size, box_size, box_size), dtype=bool)
-    
-    start_pos = (box_size//2, box_size//2, box_size//2)
-    backbone = [start_pos]
-    current_pos = np.array(start_pos, dtype=float)
-    
-    vec = rng.standard_normal(3)
-    vec /= np.linalg.norm(vec)
-    bends_made = 0
-
-    for _ in range(int(length)):
-        next_pos_f = current_pos + vec
-        next_pos_i = np.round(next_pos_f).astype(int)
-        
-        # Safety check for box boundaries
-        if any(p < radius or p >= box_size - radius for p in next_pos_i):
-            break
-
-        # Naturally bend with a certain probability according to the specified total number of bends and length
-        if bends_made < max_total_bends and rng.random() < (max_total_bends / length):
-            angle_rad = np.radians(rng.uniform(10, max_bend_deg))
-            noise = rng.standard_normal(3)
-            noise -= noise.dot(vec) * vec
-            if np.linalg.norm(noise) > 0:
-                noise /= np.linalg.norm(noise)
-                new_vec = vec * np.cos(angle_rad) + noise * np.sin(angle_rad)
-                new_vec /= np.linalg.norm(new_vec)
-                vec = new_vec
-                bends_made += 1
-        
-        current_pos = current_pos + vec
-        backbone.append(np.round(current_pos).astype(int))
-
-    # Flesh out with a brush
-    # ==========================================
-    # Dramatic speed-up point (Batch fleshing out by Dilation)
-    # ==========================================
-    # 1. Set only the backbone (core) pixels to True
-    for (bz, by, bx) in backbone:
-        if 0 <= bz < box_size and 0 <= by < box_size and 0 <= bx < box_size:
-            mask[bz, by, bx] = True
-            
-    # 2. Create a spherical structuring element (brush)
-    rz, ry, rx = np.ogrid[-radius:radius+1, -radius:radius+1, -radius:radius+1]
-    brush = rx**2 + ry**2 + rz**2 <= radius**2
-    
-    # 3. Flesh out all at once using dilation processing
-    mask = binary_dilation(mask, structure=brush)
-
-    return mask
-
-def _create_agglom_single_fiber_mask(length, radius, max_bend_deg, max_total_bends):
-    """Single fiber mask for agglomerates that grows to both sides from the center and random walks midway"""
-    box_size = int(length + radius * 2 + 5)
-    mask = np.zeros((box_size, box_size, box_size), dtype=bool)
-    center_pos = (box_size // 2, box_size // 2, box_size // 2)
-    
-    rz, ry, rx = np.ogrid[-radius:radius+1, -radius:radius+1, -radius:radius+1]
-    brush = rx**2 + ry**2 + rz**2 <= radius**2
-    
-    straight_steps = int(max(3, length * 0.05))
-    half_len_a = length // 2
-    half_len_b = length - half_len_a
-    
-    vec = rng.standard_normal(3)
-    vec /= np.linalg.norm(vec)
-    start_pos = center_pos
-    
-    def grow_path(steps, v_dir):
-        path = []
-        curr = np.array(start_pos, dtype=float)
-        v = v_dir.copy()
-        bends = 0
-        # Adjust bending probability according to remaining steps
-        bend_prob = (max_total_bends / 2) / max(1, steps - straight_steps)
-        
-        for i in range(steps):
-            if i >= straight_steps and bends < (max_total_bends / 2):
-                if rng.random() < bend_prob:
-                    angle_rad = np.radians(rng.uniform(20, max_bend_deg))
-                    noise = rng.standard_normal(3)
-                    noise -= noise.dot(v) * v
-                    if np.linalg.norm(noise) > 0:
-                        noise /= np.linalg.norm(noise)
-                        v = v * np.cos(angle_rad) + noise * np.sin(angle_rad)
-                        v /= np.linalg.norm(v)
-                        bends += 1
-                        
-            curr += v
-            z, y, x = np.round(curr).astype(int)
-            z = max(radius, min(box_size - radius - 1, z))
-            y = max(radius, min(box_size - radius - 1, y))
-            x = max(radius, min(box_size - radius - 1, x))
-            path.append((z, y, x))
-        return path
-
-    backbone_a = grow_path(half_len_a, vec)
-    backbone_b = grow_path(half_len_b, -vec)
-    # Combine both sides across the start position
-    backbone = backbone_b[::-1] + [tuple(start_pos)] + backbone_a
-    
-    for (z, y, x) in backbone:
-        mask[z, y, x] = True
-        
-    mask = binary_dilation(mask, structure=brush)
-    return mask
-
-def create_agglomerate_mask(num_fibers, length, radius, max_bend_deg=90, max_total_bends=10, physics_mode='thermal', filler_id=4, inter_id=3):
-    """Generate an agglomerate mask of multiple entangled fibers, crop, and return"""
-    # The fiber grows a max of length/2 from the center, so box size is scaled down based on length
-    box_size = int(length + radius * 2 + 5)
-    combined_mask = np.zeros((box_size, box_size, box_size), dtype=np.uint8)
-    
-    center = box_size // 2
-    start_radius = radius * 2
-    
-    for _ in range(num_fibers):
-        # Generate bilateral growth fibers specialized for agglomerates
-        fiber_mask = _create_agglom_single_fiber_mask(length, radius, max_bend_deg, max_total_bends)
-        
-        # Shift the center position slightly and composite
-        offset = np.round(rng.standard_normal(3) * start_radius).astype(int)
-        
-        # Slice combination processing exactly identical to the existing code
-        shift_z, shift_y, shift_x = offset
-        
-        z_start = max(0, shift_z)
-        z_end = min(box_size, box_size + shift_z)
-        y_start = max(0, shift_y)
-        y_end = min(box_size, box_size + shift_y)
-        x_start = max(0, shift_x)
-        x_end = min(box_size, box_size + shift_x)
-        
-        fz_start = max(0, -shift_z)
-        fz_end = fz_start + (z_end - z_start)
-        fy_start = max(0, -shift_y)
-        fy_end = fy_start + (y_end - y_start)
-        fx_start = max(0, -shift_x)
-        fx_end = fx_start + (x_end - x_start)
-        
-        target_view = combined_mask[z_start:z_end, y_start:y_end, x_start:x_end]
-        source_view = fiber_mask[fz_start:fz_end, fy_start:fy_end, fx_start:fx_end]
-        
-        if physics_mode == 'thermal':
-            # Thermal mode: Overlap between existing filler (>=2) and new fiber is 2 (Contact/Penalty)
-            target_view[(target_view >= 2) & source_view] = inter_id  
-            # For the new fiber, empty parts (==0) become filler
-            target_view[(target_view == 0) & source_view] = filler_id 
-        else:
-            # Electrical/Mechanics mode: Maintain all as filler even upon contact or intersection
-            target_view[source_view] = filler_id
-            
-    return crop_mask_to_bbox(combined_mask)
-
-def create_staggered_flakes_mask(radius=15, layer_thickness=2, min_layers=1, max_layers=4, max_offset_pct=30):
+def crop_and_recenter_geometry(mask, raw_points_list):
     """
-    Generate a compound stamp of staggered (stacked and offset) flake-like platelets.
-    Useful for simulating face-to-face contact and agglomeration in random sequential adsorption.
+    Crops the mask and perfectly recenters the analytical geometry coordinates 
+    so that [0,0,0] strictly corresponds to the center of the cropped mask.
+    raw_points_list expects coordinates in the absolute space (0 to box_size).
     """
-    # Initialize random number generator locally
-    rng = np.random.default_rng()
-    # Determine the number of layers for this specific aggregate
-    num_layers = rng.integers(min_layers, max_layers + 1)
-    # Calculate maximum absolute offset in pixels
-    max_offset_px = radius * (max_offset_pct / 100.0)
-    # Pre-allocate a bounding box large enough to hold the worst-case random walk
-    max_spread = radius + num_layers * max_offset_px
-    box_size = int(math.ceil(max_spread * 2 + num_layers * layer_thickness)) + 4
-    # Initialize an empty 3D boolean array (canvas)
-    Xr, Yr, Zr = create_rotated_grid((box_size, box_size, box_size), rng.random(3) * 2 * np.pi)
-    stamp = np.zeros((box_size, box_size, box_size), dtype=bool)
-
-    current_cy, current_cx = 0.0, 0.0
-    z_start_offset = - (num_layers * layer_thickness) / 2.0
-
-    for i in range(num_layers):
-        if i > 0:
-            # Random walk: shift the center for subsequent layers
-            angle = rng.uniform(0, 2 * np.pi)
-            dist = rng.uniform(0, max_offset_px)
-            current_cy += dist * np.sin(angle)
-            current_cx += dist * np.cos(angle)
-            
-        z_center = z_start_offset + (i + 0.5) * layer_thickness
-        layer_mask = ((Xr - current_cx)**2 + (Yr - current_cy)**2 <= radius**2) & \
-                     (np.abs(Zr - z_center) <= layer_thickness / 2.0)
+    coords = np.argwhere(mask > 0)
+    if len(coords) == 0:
+        return mask, raw_points_list
         
-        stamp |= layer_mask
+    mins = coords.min(axis=0)
+    maxs = coords.max(axis=0)
+    cropped_mask = mask[mins[0]:maxs[0]+1, mins[1]:maxs[1]+1, mins[2]:maxs[2]+1]
+    cropped_center = np.array(cropped_mask.shape) // 2
+    
+    recentered_lists = []
+    for pts in raw_points_list:
+        pts_arr = np.array(pts, dtype=float)
+        # Shift to the cropped local coordinate system
+        new_pts = pts_arr - mins - cropped_center
+        recentered_lists.append(new_pts)
         
-    # Trim empty margins before returning to optimize placement checks
-    return crop_mask_to_bbox(stamp)
-
-def get_flexible_fiber_mask(length=90, radius=2, max_bend_deg=90, max_total_bends=10, physics_mode='thermal'):
-    return crop_mask_to_bbox(create_fiber_mask(length, radius, max_bend_deg, max_total_bends))
-
-def get_agglomerate_mask(num_fibers=5, length=90, radius=2, max_bend_deg=90, max_total_bends=10, physics_mode='thermal'):
-    return create_agglomerate_mask(num_fibers, length, radius, max_bend_deg, max_total_bends, physics_mode)
-
-def get_staggered_flakes_mask(radius=15, layer_thickness=2, min_layers=1, max_layers=4, max_offset_pct=30, physics_mode='thermal'):
-    return create_staggered_flakes_mask(radius, layer_thickness, min_layers, max_layers, max_offset_pct)
+    return cropped_mask, recentered_lists
 
 # =========================================================
 # A. Background Phase (Polymer Matrix) Generation Module
@@ -352,6 +171,210 @@ def create_rotated_grid_with_normal(shape, angles):
     
     return rotated_coords[2,:].reshape(shape), rotated_coords[1,:].reshape(shape), rotated_coords[0,:].reshape(shape), normal_vector
 
+def create_staggered_flakes_mask(radius=15, layer_thickness=2, min_layers=1, max_layers=4, max_offset_pct=30):
+    """
+    Generate a compound stamp of staggered (stacked and offset) flake-like platelets.
+    Useful for simulating face-to-face contact and agglomeration in random sequential adsorption.
+    """
+    rng = np.random.default_rng()
+    num_layers = rng.integers(min_layers, max_layers + 1)
+    max_offset_px = radius * (max_offset_pct / 100.0)
+    max_spread = radius + num_layers * max_offset_px
+    box_size = int(math.ceil(max_spread * 2 + num_layers * layer_thickness)) + 4
+    
+    angles = rng.random(3) * 2 * np.pi
+    Xr, Yr, Zr, normal = create_rotated_grid_with_normal((box_size, box_size, box_size), angles)
+    stamp = np.zeros((box_size, box_size, box_size), dtype=bool)
+
+    current_cy, current_cx = 0.0, 0.0
+    z_start_offset = - (num_layers * layer_thickness) / 2.0
+    
+    raw_layer_centers = []
+
+    for i in range(num_layers):
+        if i > 0:
+            # Random walk: shift the center for subsequent layers
+            angle = rng.uniform(0, 2 * np.pi)
+            dist = rng.uniform(0, max_offset_px)
+            current_cy += dist * np.sin(angle)
+            current_cx += dist * np.cos(angle)
+            
+        z_center = z_start_offset + (i + 0.5) * layer_thickness
+        # Convert to absolute coordinates in the box_size space
+        abs_center = [z_center + box_size//2, current_cy + box_size//2, current_cx + box_size//2]
+        raw_layer_centers.append(abs_center)
+        
+        layer_mask = ((Xr - current_cx)**2 + (Yr - current_cy)**2 <= radius**2) & \
+                     (np.abs(Zr - z_center) <= layer_thickness / 2.0)
+        stamp |= layer_mask
+        
+    cropped_mask, [recentered_layers] = crop_and_recenter_geometry(stamp, [raw_layer_centers])
+    geom_data = {
+        'base_type': 'staggered',
+        'radius': radius,
+        'layer_thickness': layer_thickness,
+        'normal': normal,
+        'layer_centers': recentered_layers
+    }
+        
+    # Trim empty margins before returning to optimize placement checks
+    return cropped_mask, geom_data
+
+def create_fiber_mask(length, radius, max_bend_deg=90, max_total_bends=10):
+    """Generate a mask for a single flexible fiber and return geometry data"""
+    box_size = int(length * 2 + radius * 2 + 5)
+    mask = np.zeros((box_size, box_size, box_size), dtype=bool)
+    
+    start_pos = (box_size//2, box_size//2, box_size//2)
+    backbone = [start_pos]
+    current_pos = np.array(start_pos, dtype=float)
+    
+    vec = rng.standard_normal(3)
+    vec /= np.linalg.norm(vec)
+    bends_made = 0
+
+    for _ in range(int(length)):
+        next_pos_f = current_pos + vec
+        next_pos_i = np.round(next_pos_f).astype(int)
+        
+        if any(p < radius or p >= box_size - radius for p in next_pos_i):
+            break
+
+        if bends_made < max_total_bends and rng.random() < (max_total_bends / length):
+            angle_rad = np.radians(rng.uniform(10, max_bend_deg))
+            noise = rng.standard_normal(3)
+            noise -= noise.dot(vec) * vec
+            if np.linalg.norm(noise) > 0:
+                noise /= np.linalg.norm(noise)
+                new_vec = vec * np.cos(angle_rad) + noise * np.sin(angle_rad)
+                new_vec /= np.linalg.norm(new_vec)
+                vec = new_vec
+                bends_made += 1
+        
+        current_pos = current_pos + vec
+        backbone.append(np.round(current_pos).astype(int))
+
+    for (bz, by, bx) in backbone:
+        if 0 <= bz < box_size and 0 <= by < box_size and 0 <= bx < box_size:
+            mask[bz, by, bx] = True
+            
+    rz, ry, rx = np.ogrid[-radius:radius+1, -radius:radius+1, -radius:radius+1]
+    brush = rx**2 + ry**2 + rz**2 <= radius**2
+    mask = binary_dilation(mask, structure=brush)
+
+    # Recenter geometry to match the cropped mask
+    cropped_mask, [local_bb] = crop_and_recenter_geometry(mask, [backbone])
+    geom_data = {'base_type': 'fiber', 'local_backbone': local_bb, 'radius': radius}
+    
+    return cropped_mask, geom_data
+
+def _create_agglom_single_fiber_mask(length, radius, max_bend_deg, max_total_bends):
+    """Single fiber mask for agglomerates that grows to both sides from the center and random walks midway"""
+    box_size = int(length + radius * 2 + 5)
+    mask = np.zeros((box_size, box_size, box_size), dtype=bool)
+    center_pos = (box_size // 2, box_size // 2, box_size // 2)
+    
+    rz, ry, rx = np.ogrid[-radius:radius+1, -radius:radius+1, -radius:radius+1]
+    brush = rx**2 + ry**2 + rz**2 <= radius**2
+    
+    straight_steps = int(max(3, length * 0.05))
+    half_len_a = length // 2
+    half_len_b = length - half_len_a
+    
+    vec = rng.standard_normal(3)
+    vec /= np.linalg.norm(vec)
+    start_pos = center_pos
+    
+    def grow_path(steps, v_dir):
+        path = []
+        curr = np.array(start_pos, dtype=float)
+        v = v_dir.copy()
+        bends = 0
+        # Adjust bending probability according to remaining steps
+        bend_prob = (max_total_bends / 2) / max(1, steps - straight_steps)
+        
+        for i in range(steps):
+            if i >= straight_steps and bends < (max_total_bends / 2):
+                if rng.random() < bend_prob:
+                    angle_rad = np.radians(rng.uniform(20, max_bend_deg))
+                    noise = rng.standard_normal(3)
+                    noise -= noise.dot(v) * v
+                    if np.linalg.norm(noise) > 0:
+                        noise /= np.linalg.norm(noise)
+                        v = v * np.cos(angle_rad) + noise * np.sin(angle_rad)
+                        v /= np.linalg.norm(v)
+                        bends += 1
+                        
+            curr += v
+            z, y, x = np.round(curr).astype(int)
+            z = max(radius, min(box_size - radius - 1, z))
+            y = max(radius, min(box_size - radius - 1, y))
+            x = max(radius, min(box_size - radius - 1, x))
+            path.append((z, y, x))
+        return path
+
+    backbone_a = grow_path(half_len_a, vec)
+    backbone_b = grow_path(half_len_b, -vec)
+    # Combine both sides across the start position
+    backbone = backbone_b[::-1] + [tuple(start_pos)] + backbone_a
+    
+    for (z, y, x) in backbone:
+        mask[z, y, x] = True
+        
+    mask = binary_dilation(mask, structure=brush)
+    return mask, backbone
+
+def create_agglomerate_mask(num_fibers, length, radius, max_bend_deg=90, max_total_bends=10, physics_mode='thermal', filler_id=4, inter_id=3):
+    """Generate an agglomerate mask of multiple entangled fibers, crop, and return"""
+    # The fiber grows a max of length/2 from the center, so box size is scaled down based on length
+    box_size = int(length + radius * 2 + 5)
+    combined_mask = np.zeros((box_size, box_size, box_size), dtype=np.uint8)
+    start_radius = radius * 2
+    
+    all_backbones = []
+    
+    for _ in range(num_fibers):
+        fiber_mask, fiber_bb = _create_agglom_single_fiber_mask(length, radius, max_bend_deg, max_total_bends)
+        offset = np.round(rng.standard_normal(3) * start_radius).astype(int)
+        
+        # Track shifted backbone for kinematics
+        shifted_bb = np.array(fiber_bb) + offset
+        all_backbones.append(shifted_bb)
+        # Slice combination processing exactly identical to the existing code
+        shift_z, shift_y, shift_x = offset
+        
+        z_start = max(0, shift_z)
+        z_end = min(box_size, box_size + shift_z)
+        y_start = max(0, shift_y)
+        y_end = min(box_size, box_size + shift_y)
+        x_start = max(0, shift_x)
+        x_end = min(box_size, box_size + shift_x)
+        
+        fz_start = max(0, -shift_z)
+        fz_end = fz_start + (z_end - z_start)
+        fy_start = max(0, -shift_y)
+        fy_end = fy_start + (y_end - y_start)
+        fx_start = max(0, -shift_x)
+        fx_end = fx_start + (x_end - x_start)
+        
+        target_view = combined_mask[z_start:z_end, y_start:y_end, x_start:x_end]
+        source_view = fiber_mask[fz_start:fz_end, fy_start:fy_end, fx_start:fx_end]
+        
+        if physics_mode == 'thermal':
+            # Thermal mode: Overlap between existing filler (>=2) and new fiber is 2 (Contact/Penalty)
+            target_view[(target_view >= 2) & source_view] = inter_id  
+            # For the new fiber, empty parts (==0) become filler
+            target_view[(target_view == 0) & source_view] = filler_id 
+        else:
+            # Electrical/Mechanics mode: Maintain all as filler even upon contact or intersection
+            target_view[source_view] = filler_id
+            
+    # Crop and align all backbones to the new cropped center
+    cropped_mask, recentered_bbs = crop_and_recenter_geometry(combined_mask > 0, all_backbones)
+    geom_data = {'base_type': 'agglomerate', 'local_backbones': recentered_bbs, 'radius': radius}
+    
+    return cropped_mask, geom_data
+
 def get_sphere_mask(radius, physics_mode='thermal'):
     """Perfect sphere filler"""
     size = int(radius * 2 + 2)
@@ -375,8 +398,11 @@ def get_flake_mask(radius, thickness, physics_mode='thermal'):
     }
     return crop_mask_to_bbox(mask), geom_data
 
+def get_staggered_flakes_mask(radius=15, layer_thickness=2, min_layers=1, max_layers=4, max_offset_pct=30, physics_mode='thermal'):
+    return create_staggered_flakes_mask(radius, layer_thickness, min_layers, max_layers, max_offset_pct)
+
 def get_rigid_cylinder_mask(length, radius, physics_mode='thermal'):
-    """Rigid short fiber"""
+    """Rigid short fiber with geometry data"""
     size = int(length + radius * 2 + 5)
     mask = np.zeros((size, size, size), dtype=bool)
     
@@ -397,15 +423,16 @@ def get_rigid_cylinder_mask(length, radius, physics_mode='thermal'):
     brush = rx**2 + ry**2 + rz**2 <= radius**2
     mask = binary_dilation(mask, structure=brush)
     
-    backbone_arr = np.array(backbone)
-    local_backbone = backbone_arr - np.array([cz, cy, cx])
+    cropped_mask, [local_bb] = crop_and_recenter_geometry(mask, [backbone])
+    geom_data = {'base_type': 'fiber', 'local_backbone': local_bb, 'radius': radius}
     
-    geom_data = {
-        'base_type': 'fiber',
-        'local_backbone': local_backbone,
-        'radius': radius
-    }
-    return crop_mask_to_bbox(mask), geom_data
+    return cropped_mask, geom_data
+
+def get_flexible_fiber_mask(length=90, radius=2, max_bend_deg=90, max_total_bends=10, physics_mode='thermal'):
+    return create_fiber_mask(length, radius, max_bend_deg, max_total_bends)
+
+def get_agglomerate_mask(num_fibers=5, length=90, radius=2, max_bend_deg=90, max_total_bends=10, physics_mode='thermal'):
+    return create_agglomerate_mask(num_fibers, length, radius, max_bend_deg, max_total_bends, physics_mode)
 
 def calculate_protrusion_limit(filler_voxels, total_voxels, half_protrusion_vol_ratio=0.0025):
     """Calculation of adaptive protrusion tolerance based on half-value volume ratio model"""
@@ -738,7 +765,6 @@ def _check_and_place_fast(comp_grid, tpms_grid, cz, cy, cx,
                 comp_grid[tz, ty, tx] = filler_id
                 
     return True
-
 
 def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_frac,
                          max_attempts=1000000, fallback_func=None, desc="",
@@ -1135,6 +1161,27 @@ def apply_background_deformation(grid, stretch_ratio=1.0, poisson_ratio=0.4):
 
     return affine_transform(grid, matrix=matrix, output_shape=new_shape, order=0, mode='wrap')
 
+def _transform_fiber_kinematics(local_bb, lam, lam_nu):
+    """Calculates rigid-body transformation of an inextensible fiber backbone"""
+    diffs = np.diff(local_bb, axis=0)
+    diffs_def = np.zeros_like(diffs, dtype=float)
+    diffs_def[:, 0] = diffs[:, 0] * lam_nu
+    diffs_def[:, 1] = diffs[:, 1] * lam_nu
+    diffs_def[:, 2] = diffs[:, 2] * lam
+
+    orig_lens = np.linalg.norm(diffs, axis=1)
+    def_lens = np.linalg.norm(diffs_def, axis=1)
+    valid = def_lens > 1e-8
+    diffs_def[valid] = (diffs_def[valid] / def_lens[valid, None]) * orig_lens[valid, None]
+
+    new_bb = np.zeros((len(local_bb), 3), dtype=float)
+    new_bb[1:] = np.cumsum(diffs_def, axis=0)
+    
+    # Strictly anchor the first point to its affinely transformed location
+    start_anchor = local_bb[0] * np.array([lam_nu, lam_nu, lam])
+    new_bb += (start_anchor - new_bb[0])
+    return new_bb
+
 def render_deformed_fillers(placement_registry, base_shape, stretch_ratio, poisson_ratio, is_thermal, comp_grid, shell_count_grid, tunnel_radius=2):
     """Renders rigid fillers into the deformed configuration."""
     lam = stretch_ratio
@@ -1195,26 +1242,63 @@ def render_deformed_fillers(placement_registry, base_shape, stretch_ratio, poiss
             mask = crop_mask_to_bbox(mask)
             _paste_mask_to_grid(comp_grid, shell_count_grid, new_cz, new_cy, new_cx, mask, item['filler_id'], item['inter_id'], is_thermal, tunnel_radius)
 
-        elif geom['base_type'] == 'fiber':
-            # For lines, vector v transforms as v' = F * v
-            local_bb = geom['local_backbone']
-            diffs = np.diff(local_bb, axis=0)
-            diffs_def = np.zeros_like(diffs, dtype=float)
-            diffs_def[:, 0] = diffs[:, 0] * lam_nu # Z
-            diffs_def[:, 1] = diffs[:, 1] * lam_nu # Y
-            diffs_def[:, 2] = diffs[:, 2] * lam    # X
-
-            orig_lens = np.linalg.norm(diffs, axis=1)
-            def_lens = np.linalg.norm(diffs_def, axis=1)
+        elif geom['base_type'] == 'staggered':
+            # 1. Transform the normal vector using F^-T (Surface kinematics)
+            n_orig = geom['normal']
+            n_new = np.array([
+                n_orig[0] * (lam ** poisson_ratio),
+                n_orig[1] * (lam ** poisson_ratio),
+                n_orig[2] / lam
+            ])
+            n_new /= np.linalg.norm(n_new)
             
-            valid = def_lens > 1e-8
-            diffs_def[valid] = (diffs_def[valid] / def_lens[valid, None]) * orig_lens[valid, None]
+            # 2. Find rotation matrix that aligns [1,0,0] (Z-axis) to n_new
+            z_axis = np.array([1.0, 0.0, 0.0])
+            v = np.cross(z_axis, n_new)
+            c = np.dot(z_axis, n_new)
+            s = np.linalg.norm(v)
+            
+            # Ensure the bounding box is large enough for the worst-case rotation of the aggregate
+            num_layers = len(geom['layer_centers'])
+            max_spread = geom['radius'] + num_layers * geom['radius'] # Safe upper bound
+            size = int(math.ceil(max_spread * 2 + num_layers * geom['layer_thickness'])) + 4
+            
+            Z_idx, Y_idx, X_idx = np.indices((size, size, size))
+            Z_idx = Z_idx - size//2
+            Y_idx = Y_idx - size//2
+            X_idx = X_idx - size//2
+            
+            if s < 1e-6:
+                R = np.eye(3) if c > 0 else -np.eye(3)
+            else:
+                kmat = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+                R = np.eye(3) + kmat + kmat.dot(kmat) * ((1 - c) / (s ** 2))
+                
+            coords = np.stack([Z_idx.ravel(), Y_idx.ravel(), X_idx.ravel()])
+            rot_coords = R @ coords
+            Zr = rot_coords[0,:].reshape((size, size, size))
+            Yr = rot_coords[1,:].reshape((size, size, size))
+            Xr = rot_coords[2,:].reshape((size, size, size))
+            
+            # 3. Reconstruct the rigid staggered layers in the newly rotated local frame
+            mask = np.zeros((size, size, size), dtype=bool)
+            for z_center, cy, cx in geom['layer_centers']:
+                layer_mask = ((Xr - cx)**2 + (Yr - cy)**2 <= geom['radius']**2) & \
+                             (np.abs(Zr - z_center) <= geom['layer_thickness'] / 2.0)
+                mask |= layer_mask
+                
+            mask = crop_mask_to_bbox(mask)
+            _paste_mask_to_grid(comp_grid, shell_count_grid, new_cz, new_cy, new_cx, mask, item['filler_id'], item['inter_id'], is_thermal, tunnel_radius)
 
-            new_bb = np.zeros((len(local_bb), 3), dtype=float)
-            new_bb[1:] = np.cumsum(diffs_def, axis=0)
-            new_bb -= np.mean(new_bb, axis=0)
-
+        elif geom['base_type'] == 'fiber':
+            new_bb = _transform_fiber_kinematics(geom['local_backbone'], lam, lam_nu)
             _draw_fiber_to_grid(comp_grid, shell_count_grid, new_cz, new_cy, new_cx, new_bb, geom['radius'], item['filler_id'], item['inter_id'], is_thermal, tunnel_radius)
+
+        elif geom['base_type'] == 'agglomerate':
+            # Handle multiple tangled fibers in the same transformed local frame
+            for local_bb in geom['local_backbones']:
+                new_bb = _transform_fiber_kinematics(local_bb, lam, lam_nu)
+                _draw_fiber_to_grid(comp_grid, shell_count_grid, new_cz, new_cy, new_cx, new_bb, geom['radius'], item['filler_id'], item['inter_id'], is_thermal, tunnel_radius)
 
 def _paste_mask_to_grid(comp_grid, shell_count_grid, cz, cy, cx, mask, filler_id, inter_id, is_thermal, tunnel_radius):
     """Helper to paste a generic boolean mask (flakes/spheres) into the grid"""
