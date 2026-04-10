@@ -193,15 +193,14 @@ def create_staggered_flakes_mask(radius=15, layer_thickness=2, min_layers=1, max
     max_offset_px = radius * (max_offset_pct / 100.0)
     # Pre-allocate a bounding box large enough to hold the worst-case random walk
     max_spread = radius + num_layers * max_offset_px
-    box_size_xy = int(math.ceil(max_spread * 2)) + 4
-    box_size_z = num_layers * layer_thickness
+    box_size = int(math.ceil(max_spread * 2 + num_layers * layer_thickness)) + 4
     # Initialize an empty 3D boolean array (canvas)
-    stamp = np.zeros((box_size_z, box_size_xy, box_size_xy), dtype=bool)
-    # Set the initial center coordinate for the first layer (bottom)
-    current_cy, current_cx = box_size_xy / 2.0, box_size_xy / 2.0
-    # Create coordinate grids for fast vectorized distance calculation
-    y, x = np.ogrid[:box_size_xy, :box_size_xy]
-    
+    Xr, Yr, Zr = create_rotated_grid((box_size, box_size, box_size), rng.random(3) * 2 * np.pi)
+    stamp = np.zeros((box_size, box_size, box_size), dtype=bool)
+
+    current_cy, current_cx = 0.0, 0.0
+    z_start_offset = - (num_layers * layer_thickness) / 2.0
+
     for i in range(num_layers):
         if i > 0:
             # Random walk: shift the center for subsequent layers
@@ -210,13 +209,11 @@ def create_staggered_flakes_mask(radius=15, layer_thickness=2, min_layers=1, max
             current_cy += dist * np.sin(angle)
             current_cx += dist * np.cos(angle)
             
-        # Create a boolean mask for the current circular flake
-        disk_mask = (y - current_cy)**2 + (x - current_cx)**2 <= radius**2
+        z_center = z_start_offset + (i + 0.5) * layer_thickness
+        layer_mask = ((Xr - current_cx)**2 + (Yr - current_cy)**2 <= radius**2) & \
+                     (np.abs(Zr - z_center) <= layer_thickness / 2.0)
         
-        # Write the flake into the corresponding Z-height slice
-        z_start = i * layer_thickness
-        z_end = (i + 1) * layer_thickness
-        stamp[z_start:z_end, disk_mask] = True
+        stamp |= layer_mask
         
     # Trim empty margins before returning to optimize placement checks
     return crop_mask_to_bbox(stamp)
