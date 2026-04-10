@@ -24,6 +24,7 @@ from micro_builder import (
     get_rigid_cylinder_mask,
     get_flexible_fiber_mask,
     get_agglomerate_mask,
+    get_staggered_flakes_mask,
     finalize_microstructure,
     export_chfem_inputs,
     export_visualization_vti,
@@ -141,19 +142,25 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--size", type=int, default=200)
     parser.add_argument("--voxel_size", type=float, default=1e-8)
-    parser.add_argument("--bg_type", type=str, default="gyroid", choices=["single", "gyroid", "sea_island", "island_sea", "lamellar", "cylinder", "bcc"])
+    parser.add_argument("--bg_type", type=str, default="gyroid",
+                        choices=["single", "gyroid", "sea_island", "island_sea", "lamellar", "cylinder", "bcc"])
     parser.add_argument("--phaseA_ratio", type=float, default=0.57)
     parser.add_argument("--recipe", nargs='+', required=True)
     parser.add_argument("--basename", type=str, default="model")
     parser.add_argument("--csv_log", type=str, default="comparison_results.csv")
-    parser.add_argument("--physics_mode", type=str, default="thermal", choices=["thermal", "electrical", "mechanics"])
-    
-    parser.add_argument("--solver", type=str, default="both", choices=["chfem", "puma", "both"], help="Solver for homogenisation")
+    parser.add_argument("--physics_mode", type=str, default="thermal",
+                        choices=["thermal", "electrical", "mechanics"])
+    parser.add_argument("--solver", type=str, default="both",
+                        choices=["chfem", "puma", "both"], help="Solver for homogenisation")
     parser.add_argument("--prop_A", type=str, default=None, help="Property for Polymer A")
     parser.add_argument("--prop_B", type=str, default=None, help="Property for Polymer B")
     parser.add_argument("--prop_inter", type=str, default=None, help="Property for Primary Contact/Tunnel phase")
     parser.add_argument("--prop_inter2", type=str, default=None, help="Property for Secondary Contact/Tunnel phase")
     parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")
+    parser.add_argument("--tunnel_radius", type=int, default=2, 
+                        help="Radius in voxels for nearest-neighbor (tunneling) detection")
+    parser.add_argument("--contact_radius", type=int, default=1, 
+                        help="Radius in voxels for primary contact interface thickness")
     return parser.parse_args()
 
 
@@ -187,8 +194,9 @@ def main():
     valid_recipes = [r for r in args.recipe if float(r.split(':')[1]) > 0]
     
     # Fixed ID assignment based on new micro_builder logic
-    primary_inter_id = 2
-    secondary_inter_id = 3
+    secondary_inter_id = 2
+    primary_inter_id = 3
+    filler_start_id = 4
     filler_start_id = 4
     current_filler_id = filler_start_id
     
@@ -234,7 +242,7 @@ def main():
     shell_count_grid = np.zeros_like(comp_grid) if args.physics_mode in ['electrical', 'mechanics'] else None
     step_logs.append(f"BG({args.bg_type}):{time.time() - t0:.1f}s")
 
-    # 2. Filler placement based on recipe
+# 2. Filler placement based on recipe
     for step in valid_recipes:
         parts = step.split(':')
         f_type = parts[0]
@@ -253,47 +261,76 @@ def main():
         protrusion_coef = opts.pop('protrusion_coef', 0.0025)
         t_step = time.time()
         
+        hybrid_args = {
+            'comp_grid': comp_grid,
+            'tpms_grid': tpms_grid,
+            'target_vol_frac': f_vol,
+            'protrusion_coef': protrusion_coef,
+            'log_file': build_log,
+            'physics_mode': args.physics_mode,
+            'shell_count_grid': shell_count_grid,
+            'filler_id': current_filler_id,
+            'inter_id': primary_inter_id, 
+            'tunnel_radius': args.tunnel_radius
+        }
+        
         if f_type == "flake":
-            kwargs = {'radius': opts.get('radius', 10), 'thickness': opts.get('thickness', 2)}
-            place_fillers_hybrid(comp_grid, tpms_grid, get_flake_mask, kwargs, f_vol, 
-                                 protrusion_coef=protrusion_coef, log_file=build_log,
-                                 physics_mode=args.physics_mode, shell_count_grid=shell_count_grid, 
-                                 filler_id=current_filler_id, inter_id=primary_inter_id)
+            kwargs = {
+                'radius': opts.get('radius', 10),
+                'thickness': opts.get('thickness', 2)
+            }
+            place_fillers_hybrid(filler_func=get_flake_mask, kwargs=kwargs, desc="Flake", **hybrid_args)
+                                 
         elif f_type == "sphere":
-            kwargs = {'radius': opts.get('radius', 5)}
-            place_fillers_hybrid(comp_grid, tpms_grid, get_sphere_mask, kwargs, f_vol, 
-                                 protrusion_coef=protrusion_coef, desc="Sphere", log_file=build_log,
-                                 physics_mode=args.physics_mode, shell_count_grid=shell_count_grid, 
-                                 filler_id=current_filler_id, inter_id=primary_inter_id)
+            kwargs = {
+                'radius': opts.get('radius', 5)
+            }
+            place_fillers_hybrid(filler_func=get_sphere_mask, kwargs=kwargs, desc="Sphere", **hybrid_args)
                                  
         elif f_type == "rigidfiber":
-            kwargs = {'length': opts.get('length', 60), 'radius': opts.get('radius', 2)}
-            place_fillers_hybrid(comp_grid, tpms_grid, get_rigid_cylinder_mask, kwargs, f_vol, 
-                                 protrusion_coef=protrusion_coef, desc="Rigid Fiber", log_file=build_log,
-                                 physics_mode=args.physics_mode, shell_count_grid=shell_count_grid, 
-                                 filler_id=current_filler_id, inter_id=primary_inter_id)
+            kwargs = {
+                'length': opts.get('length', 60),
+                'radius': opts.get('radius', 2)
+            }
+            place_fillers_hybrid(filler_func=get_rigid_cylinder_mask, kwargs=kwargs, desc="Rigid Fiber", **hybrid_args)
+                                 
         elif f_type == "adaptfiber":
-            place_adaptive_fibers(comp_grid, tpms_grid, f_vol,
+            place_adaptive_fibers(comp_grid=comp_grid, tpms_grid=tpms_grid, target_vol_frac=f_vol,
                                   length=opts.get('length', 90), radius=opts.get('radius', 2),
                                   max_bend_deg=opts.get('max_bend_deg', 45), max_total_bends=opts.get('max_total_bends', 5),
                                   min_backbone_ratio=opts.get('min_backbone_ratio', 0.9), max_protrusion_ratio=protrusion_coef,
                                   log_file=build_log, physics_mode=args.physics_mode, shell_count_grid=shell_count_grid,
                                   filler_id=current_filler_id, inter_id=primary_inter_id)
+                                  
         elif f_type == "flexfiber":
-            place_fillers_hybrid(comp_grid, tpms_grid, get_flexible_fiber_mask,
-                                 {'length': opts.get('length', 90), 'radius': opts.get('radius', 2),
-                                  'max_bend_deg': opts.get('max_bend_deg', 90), 'max_total_bends': opts.get('max_total_bends', 10)}, 
-                                 f_vol, protrusion_coef=protrusion_coef, desc="Flexible Fibers", log_file=build_log,
-                                 physics_mode=args.physics_mode, shell_count_grid=shell_count_grid,
-                                 filler_id=current_filler_id, inter_id=primary_inter_id)
+            kwargs = {
+                'length': opts.get('length', 90),
+                'radius': opts.get('radius', 2),
+                'max_bend_deg': opts.get('max_bend_deg', 90),
+                'max_total_bends': opts.get('max_total_bends', 10)
+            }
+            place_fillers_hybrid(filler_func=get_flexible_fiber_mask, kwargs=kwargs, desc="Flexible Fibers", **hybrid_args)
+                                 
         elif f_type == "agglomerate":
-            place_fillers_hybrid(comp_grid, tpms_grid, get_agglomerate_mask,
-                                 {'num_fibers': opts.get('num_fibers', 5),
-                                  'length': opts.get('length', 90), 'radius': opts.get('radius', 2),
-                                  'max_bend_deg': opts.get('max_bend_deg', 90), 'max_total_bends': opts.get('max_total_bends', 10)}, 
-                                 f_vol, protrusion_coef=protrusion_coef, desc=f"Agglomerate(n={int(opts.get('num_fibers', 5))})", 
-                                 log_file=build_log, physics_mode=args.physics_mode, shell_count_grid=shell_count_grid,
-                                 filler_id=current_filler_id, inter_id=primary_inter_id)
+            kwargs = {
+                'num_fibers': opts.get('num_fibers', 5),
+                'length': opts.get('length', 90),
+                'radius': opts.get('radius', 2),
+                'max_bend_deg': opts.get('max_bend_deg', 90),
+                'max_total_bends': opts.get('max_total_bends', 10)
+            }
+            desc_str = f"Agglomerate(n={int(opts.get('num_fibers', 5))})"
+            place_fillers_hybrid(filler_func=get_agglomerate_mask, kwargs=kwargs, desc=desc_str, **hybrid_args)
+                                 
+        elif f_type == "staggered":
+            kwargs = {
+                'radius': opts.get('radius', 15),
+                'layer_thickness': opts.get('layer_thickness', 2),
+                'min_layers': opts.get('min_layers', 1),
+                'max_layers': opts.get('max_layers', 4),
+                'max_offset_pct': opts.get('max_offset_pct', 30)
+            }
+            place_fillers_hybrid(filler_func=get_staggered_flakes_mask, kwargs=kwargs, desc="Staggered Flakes", **hybrid_args)
         
         step_logs.append(f"{f_type}(ID:{current_filler_id}):{time.time() - t_step:.1f}s")
         # Increment ID for the next filler recipe
@@ -305,7 +342,8 @@ def main():
         comp_grid, tpms_grid, shell_count_grid, args.physics_mode, 
         primary_inter_id=primary_inter_id, 
         secondary_inter_id=secondary_inter_id, 
-        filler_start_id=filler_start_id
+        filler_start_id=filler_start_id,
+        contact_radius=args.contact_radius
     )
     phase_stats = summarize_phase_fractions(
         final_grid, 

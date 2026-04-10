@@ -11,7 +11,7 @@ def get_next_result_dir(base_name="result_exp4_"):
         i += 1
 
 def run():
-    csv_log = "scale_check_results.csv"
+    csv_log = "exp4_scale_check_results.csv"
     out_dir = get_next_result_dir()
     os.makedirs(out_dir)
     

@@ -3,6 +3,7 @@ import numpy as np
 from scipy.ndimage import binary_dilation, convolve, label, generate_binary_structure
 from tqdm.auto import tqdm
 import pyvista as pv
+from numba import njit
 
 # --- Initialize global random number generator ---
 rng = np.random.default_rng()
@@ -132,7 +133,7 @@ def _create_agglom_single_fiber_mask(length, radius, max_bend_deg, max_total_ben
     mask = binary_dilation(mask, structure=brush)
     return mask
 
-def create_agglomerate_mask(num_fibers, length, radius, max_bend_deg=90, max_total_bends=10, physics_mode='thermal', filler_id=4, inter_id=2):
+def create_agglomerate_mask(num_fibers, length, radius, max_bend_deg=90, max_total_bends=10, physics_mode='thermal', filler_id=4, inter_id=3):
     """Generate an agglomerate mask of multiple entangled fibers, crop, and return"""
     # The fiber grows a max of length/2 from the center, so box size is scaled down based on length
     box_size = int(length + radius * 2 + 5)
@@ -179,11 +180,55 @@ def create_agglomerate_mask(num_fibers, length, radius, max_bend_deg=90, max_tot
             
     return crop_mask_to_bbox(combined_mask)
 
+def create_staggered_flakes_mask(radius=15, layer_thickness=2, min_layers=1, max_layers=4, max_offset_pct=30):
+    """
+    Generate a compound stamp of staggered (stacked and offset) flake-like platelets.
+    Useful for simulating face-to-face contact and agglomeration in random sequential adsorption.
+    """
+    # Initialize random number generator locally
+    rng = np.random.default_rng()
+    # Determine the number of layers for this specific aggregate
+    num_layers = rng.integers(min_layers, max_layers + 1)
+    # Calculate maximum absolute offset in pixels
+    max_offset_px = radius * (max_offset_pct / 100.0)
+    # Pre-allocate a bounding box large enough to hold the worst-case random walk
+    max_spread = radius + num_layers * max_offset_px
+    box_size_xy = int(math.ceil(max_spread * 2)) + 4
+    box_size_z = num_layers * layer_thickness
+    # Initialize an empty 3D boolean array (canvas)
+    stamp = np.zeros((box_size_z, box_size_xy, box_size_xy), dtype=bool)
+    # Set the initial center coordinate for the first layer (bottom)
+    current_cy, current_cx = box_size_xy / 2.0, box_size_xy / 2.0
+    # Create coordinate grids for fast vectorized distance calculation
+    y, x = np.ogrid[:box_size_xy, :box_size_xy]
+    
+    for i in range(num_layers):
+        if i > 0:
+            # Random walk: shift the center for subsequent layers
+            angle = rng.uniform(0, 2 * np.pi)
+            dist = rng.uniform(0, max_offset_px)
+            current_cy += dist * np.sin(angle)
+            current_cx += dist * np.cos(angle)
+            
+        # Create a boolean mask for the current circular flake
+        disk_mask = (y - current_cy)**2 + (x - current_cx)**2 <= radius**2
+        
+        # Write the flake into the corresponding Z-height slice
+        z_start = i * layer_thickness
+        z_end = (i + 1) * layer_thickness
+        stamp[z_start:z_end, disk_mask] = True
+        
+    # Trim empty margins before returning to optimize placement checks
+    return crop_mask_to_bbox(stamp)
+
 def get_flexible_fiber_mask(length=90, radius=2, max_bend_deg=90, max_total_bends=10, physics_mode='thermal'):
     return crop_mask_to_bbox(create_fiber_mask(length, radius, max_bend_deg, max_total_bends))
 
 def get_agglomerate_mask(num_fibers=5, length=90, radius=2, max_bend_deg=90, max_total_bends=10, physics_mode='thermal'):
     return create_agglomerate_mask(num_fibers, length, radius, max_bend_deg, max_total_bends, physics_mode)
+
+def get_staggered_flakes_mask(radius=15, layer_thickness=2, min_layers=1, max_layers=4, max_offset_pct=30, physics_mode='thermal'):
+    return create_staggered_flakes_mask(radius, layer_thickness, min_layers, max_layers, max_offset_pct)
 
 # =========================================================
 # A. Background Phase (Polymer Matrix) Generation Module
@@ -317,13 +362,34 @@ def get_flake_mask(radius, thickness, physics_mode='thermal'):
     """Flake-shaped filler"""
     size = int(radius * 2 + 4)
     Xr, Yr, Zr = create_rotated_grid((size, size, size), rng.random(3) * 2 * np.pi)
-    return (Xr**2 + Yr**2) / radius**2 + (Zr**2) / (thickness/2)**2 <= 1.0
+    return (Xr**2 + Yr**2 <= radius**2) & (np.abs(Zr) <= thickness/2)
 
 def get_rigid_cylinder_mask(length, radius, physics_mode='thermal'):
-    """Rigid short fiber"""
-    size = int(length + radius * 2 + 4)
-    Xr, Yr, Zr = create_rotated_grid((size, size, size), rng.random(3) * 2 * np.pi)
-    return (Xr**2 + Yr**2 <= radius**2) & (np.abs(Zr) <= length/2)
+    """
+    Rigid short fiber 
+    (Implemented as a spherocylinder/capsule via dilation to prevent voxel aliasing)
+    """
+    size = int(length + radius * 2 + 5)
+    mask = np.zeros((size, size, size), dtype=bool)
+    
+    vec = rng.standard_normal(3)
+    vec /= np.linalg.norm(vec)
+    cz, cy, cx = size // 2, size // 2, size // 2
+    start_pos = np.array([cz, cy, cx], dtype=float) - vec * (length / 2)
+    
+    backbone = []
+    current_pos = start_pos
+    for _ in range(int(length)):
+        iz, iy, ix = np.round(current_pos).astype(int)
+        mask[iz, iy, ix] = True
+        current_pos += vec
+        
+    # Dilation
+    rz, ry, rx = np.ogrid[-radius:radius+1, -radius:radius+1, -radius:radius+1]
+    brush = rx**2 + ry**2 + rz**2 <= radius**2
+    mask = binary_dilation(mask, structure=brush)
+    
+    return crop_mask_to_bbox(mask)
 
 def calculate_protrusion_limit(filler_voxels, total_voxels, half_protrusion_vol_ratio=0.0025):
     """Calculation of adaptive protrusion tolerance based on half-value volume ratio model"""
@@ -417,8 +483,8 @@ def grow_adaptive_fiber(tpms_grid, comp_grid, start_pos, length, overlap_mode,
                         if np.linalg.norm(u_ortho) == 0: continue
                         u_ortho /= np.linalg.norm(u_ortho)
                         
-                        # Calculate side step distance: Center-to-center distance of 4 * R
-                        shift_dist = max(2, int(radius * 4))
+                        # Calculate side step distance: Center-to-center distance of 1.6 * R
+                        shift_dist = max(2, int(radius * 1.6))
                         
                         sidestep_success = True
                         temp_pos = current_pos.copy()
@@ -475,7 +541,7 @@ def grow_adaptive_fiber(tpms_grid, comp_grid, start_pos, length, overlap_mode,
         
     return backbone
     
-def apply_brush_and_write(comp_grid, backbone, radius, physics_mode='thermal', shell_count_grid=None, filler_id=4, inter_id=2):
+def apply_brush_and_write(comp_grid, backbone, radius, physics_mode='thermal', shell_count_grid=None, filler_id=4, inter_id=3):
     shape = comp_grid.shape
     size = int(radius * 2 + 2)
     z, y, x = np.indices((size, size, size))
@@ -507,12 +573,12 @@ def apply_brush_and_write(comp_grid, backbone, radius, physics_mode='thermal', s
         # Electrical/Mechanics mode: The main body is unconditionally maintained
         comp_grid[gz, gy, gx] = filler_id
         
-        # Count the shell dilated by 2 voxels
+        # Count the shell dilated by (tunnel_radius) voxels
         if shell_count_grid is not None:
-            size_sh = int((radius + 2) * 2 + 2)
+            size_sh = int((radius + tunnel_radius) * 2 + 2)
             z_sh, y_sh, x_sh = np.indices((size_sh, size_sh, size_sh))
             cz_sh, cy_sh, cx_sh = size_sh//2, size_sh//2, size_sh//2
-            shell_brush_mask = (z_sh - cz_sh)**2 + (y_sh - cy_sh)**2 + (x_sh - cx_sh)**2 <= (radius + 2)**2
+            shell_brush_mask = (z_sh - cz_sh)**2 + (y_sh - cy_sh)**2 + (x_sh - cx_sh)**2 <= (radius + tunnel_radius)**2
             local_z_sh, local_y_sh, local_x_sh = np.where(shell_brush_mask)
             
             shell_voxels = set()
@@ -533,7 +599,7 @@ def apply_brush_and_write(comp_grid, backbone, radius, physics_mode='thermal', s
 def place_adaptive_fibers(comp_grid, tpms_grid, target_vol_frac, length, radius,
                           max_bend_deg=45, max_total_bends=10, max_retries_per_step=10, max_protrusion_ratio=0.1,
                           min_backbone_ratio=0.9, max_attempts=1000000, desc="", log_file=None,
-                          physics_mode='thermal', shell_count_grid=None, filler_id=4, inter_id=2):
+                          physics_mode='thermal', shell_count_grid=None, filler_id=4, inter_id=3):
     shape = comp_grid.shape
     target_voxels = int(np.prod(shape) * target_vol_frac)
     valid_z, valid_y, valid_x = np.where(tpms_grid == 0)
@@ -597,10 +663,75 @@ def place_adaptive_fibers(comp_grid, tpms_grid, target_vol_frac, length, radius,
 # D. RSA Placement Logic (Ultra-fast index version)
 # =========================================================
 
+# ==========================================
+# Optimized Core Routine for RSA Placement
+# ==========================================
+
+@njit
+def _check_and_place_fast(comp_grid, tpms_grid, cz, cy, cx, 
+                          stamp_offsets, stamp_vals, current_protrusion_limit, 
+                          overlap_mode, is_thermal, filler_id, inter_id):
+    """
+    Numba-optimized JIT compiled function.
+    Performs boundary checks, collision detection, and voxel writing without Python loop overhead.
+    """
+    shape_z, shape_y, shape_x = comp_grid.shape
+    num_coords = stamp_offsets.shape[0]
+    
+    # 1. Protrusion Check (Pre-calculate number of voxels extending into Phase B)
+    protrusion_count = 0
+    for i in range(num_coords):
+        tz = (stamp_offsets[i, 0] + cz) % shape_z
+        ty = (stamp_offsets[i, 1] + cy) % shape_y
+        tx = (stamp_offsets[i, 2] + cx) % shape_x
+        
+        if tpms_grid[tz, ty, tx] == 1:
+            protrusion_count += 1
+            
+    # Abort if protrusion exceeds the allowable limit
+    if protrusion_count > num_coords * current_protrusion_limit:
+        return False
+        
+    # 2. Overlap Check (Only if overlap_mode is False)
+    if not overlap_mode:
+        for i in range(num_coords):
+            tz = (stamp_offsets[i, 0] + cz) % shape_z
+            ty = (stamp_offsets[i, 1] + cy) % shape_y
+            tx = (stamp_offsets[i, 2] + cx) % shape_x
+            if comp_grid[tz, ty, tx] >= 2:
+                return False # Immediate failure upon collision
+                
+    # 3. Write operation (Guaranteed to succeed at this point)
+    for i in range(num_coords):
+        tz = (stamp_offsets[i, 0] + cz) % shape_z
+        ty = (stamp_offsets[i, 1] + cy) % shape_y
+        tx = (stamp_offsets[i, 2] + cx) % shape_x
+        
+        current_val = comp_grid[tz, ty, tx]
+        new_val = stamp_vals[i]
+        
+        if is_thermal:
+            # Thermal mode: Overlaps become contact resistance phase (inter_id)
+            if current_val >= 2:
+                comp_grid[tz, ty, tx] = inter_id
+            else:
+                comp_grid[tz, ty, tx] = new_val
+        else:
+            # Electrical/Mechanics mode: Write main body as a good conductor
+            if new_val > 0:
+                comp_grid[tz, ty, tx] = filler_id
+                
+    return True
+
+
 def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_frac,
                          max_attempts=1000000, fallback_func=None, desc="",
                          protrusion_coef=0.0025, log_file=None,
-                         physics_mode='thermal', shell_count_grid=None, filler_id=4, inter_id=2):
+                         physics_mode='thermal', shell_count_grid=None,
+                         filler_id=4, inter_id=3, tunnel_radius=2):
+    
+    # Initialize RNG inside the function for safety if not using global
+    rng = np.random.default_rng()
     
     shape = comp_grid.shape
     total_voxels = comp_grid.size
@@ -624,15 +755,18 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
 
     if 'physics_mode' not in kwargs:
         kwargs['physics_mode'] = physics_mode
+        
+    is_thermal = (physics_mode == 'thermal')
 
     with tqdm(total=target_voxels, desc=desc, unit="voxel") as pbar:
         while placed_voxels < initial_placed + target_voxels and attempts < max_attempts:
             attempts += 1
             
+            # Switch to soft-core (overlap allowed) if failed continuously
             if not overlap_mode and consecutive_fails > 500:
                 overlap_mode = True
 
-            # Update cache
+            # Update cache for rigid filler geometries
             if stamp_offsets is None or cache_reuse_count >= MAX_CACHE_REUSE:
                 raw_stamp = filler_func(**kwargs)
                 
@@ -645,16 +779,18 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
                 center = np.array(raw_stamp.shape) // 2
                 stamp_offsets = coords - center
                 
-                # Extract values for writing
+                # Pre-extract values for writing
                 if raw_stamp.dtype == bool:
                     stamp_vals = np.full(len(coords), filler_id, dtype=np.uint8)
                 else:
                     stamp_vals = raw_stamp[coords[:, 0], coords[:, 1], coords[:, 2]].astype(np.uint8)
 
-                # For electrical mode, extract shell coordinates dilated by 2 voxels
-                if physics_mode == 'electrical':
-                    rz, ry, rx = np.ogrid[-2:3, -2:3, -2:3]
-                    shell_brush = rx**2 + ry**2 + rz**2 <= 2**2
+                # Shell extraction for electrical mode
+                if not is_thermal and shell_count_grid is not None:
+                    rz, ry, rx = np.ogrid[-tunnel_radius:tunnel_radius+1, 
+                                          -tunnel_radius:tunnel_radius+1, 
+                                          -tunnel_radius:tunnel_radius+1]
+                    shell_brush = rx**2 + ry**2 + rz**2 <= tunnel_radius**2
                     dilated = binary_dilation(raw_stamp > 0, structure=shell_brush)
                     shell_coords = np.argwhere(dilated)
                     shell_offsets = shell_coords - center
@@ -662,56 +798,38 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
                     shell_offsets = None
 
                 filler_voxels = len(coords)
+                # Note: Assuming calculate_protrusion_limit is defined elsewhere in the file
                 current_protrusion_limit = calculate_protrusion_limit(filler_voxels, total_voxels, protrusion_coef)
                 cache_reuse_count = 0
 
+            # Pick a random valid coordinate
             idx = rng.integers(0, num_valid_coords)
             cz, cy, cx = valid_z[idx], valid_y[idx], valid_x[idx]
 
-            # Calculate global coordinates for judgment
-            target_coords = stamp_offsets + np.array([cz, cy, cx])
-            tz, ty, tx = target_coords[:, 0], target_coords[:, 1], target_coords[:, 2]
-            tz, ty, tx = tz % shape[0], ty % shape[1], tx % shape[2]
-
-            in_phase_b = (tpms_grid[tz, ty, tx] == 1)
-            protrusion_count = np.sum(in_phase_b)
-            
-            success = False
-            if protrusion_count <= len(target_coords) * current_protrusion_limit:
-                # Collision check with existing fillers
-                overlap_mask = comp_grid[tz, ty, tx] >= 2
-                
-                if overlap_mode or not np.any(overlap_mask):
-                    current_vals = comp_grid[tz, ty, tx]
-                    new_vals = stamp_vals.copy()
-                    
-                    if physics_mode == 'thermal':
-                        # Areas overlapping with already placed fillers (>=2) are converted to contact resistance phase (2)
-                        contact_idx = (current_vals >= 2)
-                        new_vals[contact_idx] = inter_id
-                        comp_grid[tz, ty, tx] = new_vals
-                    else:
-                        # Electrical mode: Main body is overwritten entirely as a good conductor
-                        comp_grid[tz, ty, tx] = np.where(new_vals > 0, filler_id, current_vals)
-                        
-                        # Update shell counter
-                        if shell_count_grid is not None and shell_offsets is not None:
-                            stz = (shell_offsets[:, 0] + cz) % shape[0]
-                            sty = (shell_offsets[:, 1] + cy) % shape[1]
-                            stx = (shell_offsets[:, 2] + cx) % shape[2]
-                            shell_count_grid[stz, sty, stx] += 1
-
-                    success = True
+            # Execute Numba-optimized placement routine
+            success = _check_and_place_fast(
+                comp_grid, tpms_grid, cz, cy, cx, 
+                stamp_offsets, stamp_vals, current_protrusion_limit, 
+                overlap_mode, is_thermal, filler_id, inter_id
+            )
 
             if not success:
                 cache_reuse_count += 1
                 consecutive_fails += 1
                 continue
 
-            # Reset cache only on success
+            # Update shell count grid outside Numba using fast vectorized Numpy operations
+            if not is_thermal and shell_count_grid is not None and shell_offsets is not None:
+                stz = (shell_offsets[:, 0] + cz) % shape[0]
+                sty = (shell_offsets[:, 1] + cy) % shape[1]
+                stx = (shell_offsets[:, 2] + cx) % shape[2]
+                shell_count_grid[stz, sty, stx] += 1
+
+            # Reset cache and fails only on success
             stamp_offsets = None 
             consecutive_fails = 0
             
+            # Update progress
             current_total = np.sum(comp_grid >= 2)
             added_voxels = current_total - placed_voxels
             placed_voxels = current_total
@@ -796,8 +914,9 @@ def _cleanup_small_components(mask, min_component_size=2):
     return keep[labeled]
 
 def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics_mode='thermal', 
-                            primary_inter_id=2, secondary_inter_id=3, filler_start_id=4,
-                            sliver_fill_iters=1, spike_min_neighbors=2, min_interface_component_size=2):
+                            primary_inter_id=3, secondary_inter_id=3, filler_start_id=4,
+                            sliver_fill_iters=1, spike_min_neighbors=2, min_interface_component_size=2,
+                            contact_radius=1):
     """
     Combine background and filler phases.
     For electrical/mechanics modes, cleans up the unified interface, then splits it 
@@ -843,11 +962,11 @@ def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics
         filler_mask = (final_grid >= filler_start_id)
         
         if np.any(unified_interface_mask) and np.any(filler_mask):
-            # Dilate filler by exactly 1 voxel in 6-neighborhood
+            # Dilate filler (contact_radius) times by exactly 1 voxel in 6-neighborhood
             struct_1voxel = generate_binary_structure(3, 1)
-            dilated_filler = binary_dilation(filler_mask, structure=struct_1voxel)
+            dilated_filler = binary_dilation(filler_mask, structure=struct_1voxel, iterations=contact_radius)
             
-            # Secondary interface is the part of the unified interface NOT touched by the 1-voxel dilation
+            # Secondary interface is the part of the unified interface NOT touched by the dilation
             secondary_mask = unified_interface_mask & (~dilated_filler)
             
             # Update the grid
@@ -880,7 +999,7 @@ def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics
 
     return final_grid
 
-def summarize_phase_fractions(final_grid, primary_inter_id=2, secondary_inter_id=3, filler_start_id=4):
+def summarize_phase_fractions(final_grid, primary_inter_id=3, secondary_inter_id=3, filler_start_id=4):
     """Aggregate the volume fraction of each phase"""
     total_voxels = final_grid.size
     max_id = final_grid.max() 
