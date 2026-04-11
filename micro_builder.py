@@ -1,5 +1,6 @@
 import math
 import numpy as np
+from scipy.linalg import polar
 from scipy.ndimage import binary_dilation, convolve, label, generate_binary_structure, affine_transform
 from tqdm.auto import tqdm
 import pyvista as pv
@@ -1075,8 +1076,6 @@ def export_visualization_vti(final_grid, filename="microstructure.vti", voxel_si
     Output the 3D grid in the optimal VTI format for ParaView.
     Embed physical dimensions (voxel_size) and metadata for HUD (metadata) in Field Data.
     """
-    import pyvista as pv
-
     grid = pv.ImageData()
     
     # NumPy (Z, Y, X) -> PyVista (X, Y, Z)
@@ -1131,7 +1130,6 @@ def export_chfem_inputs(final_grid, base_filename="model", voxel_size=1e-8, phys
 
 def apply_background_deformation(grid, stretch_ratio=1.0, poisson_ratio=0.4):
     """Applies affine deformation ONLY to the continuous polymer background."""
-    from scipy.ndimage import affine_transform
     if stretch_ratio == 1.0:
         return grid.copy()
 
@@ -1207,8 +1205,6 @@ def _render_and_paste_kinematics(comp_grid, shell_count_grid, P_CM_new, F_mat, g
     R_orig = np.array(geom['R_orig'])
     radius = geom['radius']
     local_kinematics = geom['local_kinematics']
-
-    from scipy.linalg import polar
 
     if base_type in ['flake', 'staggered']:
         # Extract pure rigid-body rotation (Polar Decomposition)
@@ -1310,9 +1306,6 @@ def _render_and_paste_kinematics(comp_grid, shell_count_grid, P_CM_new, F_mat, g
 
 def render_deformed_fillers(placement_registry, base_shape, stretch_ratio, poisson_ratio, is_thermal, comp_grid, shell_count_grid, tunnel_radius=2):
     """Renders rigid fillers into the deformed configuration."""
-    if stretch_ratio == 1.0:
-        return # Skip unnecessary deformation/rendering operations for the initial state
-
     lam = stretch_ratio
     lam_nu = stretch_ratio ** (-poisson_ratio)
     F_mat = np.diag([lam_nu, lam_nu, lam])
