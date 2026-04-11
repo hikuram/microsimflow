@@ -45,21 +45,21 @@ Just upload the notebook to Google Colab, set the runtime to **T4 GPU**, and run
 We provide pre-defined scripts to run specific physical studies. Results (3D `.vti` files, `.png` slices, and logs) are saved into automatically numbered directories (e.g., `result_exp1_01/`), while numerical metrics are aggregated into a central CSV file in the root directory.
 
 ```bash
-python3 run_exp0_percolation.py   # Standard percolation sweep (length, radius, volume fraction)
-python3 run_exp1_agglom.py        # Agglomeration sweep (fiber entanglement effects)
-python3 run_exp2_gyroid.py        # Gyroid background sweep
-python3 run_exp3_hybrid.py        # Hybrid synergy sweep (mixing fibers and flakes)
-python3 run_exp4_scale_check.py   # Representative Volume Element (RVE) scale validation
+python3 exp/run_exp0_percolation.py   # Standard percolation sweep (length, radius, volume fraction)
+python3 exp/run_exp1_agglom.py        # Agglomeration sweep (fiber entanglement effects)
+python3 exp/run_exp2_gyroid.py        # Gyroid background sweep
+python3 exp/run_exp3_hybrid.py        # Hybrid synergy sweep (mixing fibers and flakes)
+python3 exp/run_exp4_scale_check.py   # Representative Volume Element (RVE) scale validation
 ```
 
 ### 2. Plotting Results
 Once the experiments are complete and the central CSV logs are generated, you can visualize the trends using the included plotting scripts:
 
 ```bash
-python3 plot_exp0_percolation.py
-python3 plot_exp1_agglom.py
-python3 plot_exp2_gyroid.py
-python3 plot_exp3_hybrid.py
+python3 exp/plot_exp0_percolation.py
+python3 exp/plot_exp1_agglom.py
+python3 exp/plot_exp2_gyroid.py
+python3 exp/plot_exp3_hybrid.py
 ```
 *These scripts will read the generated CSVs and output comparison graphs.*
 
