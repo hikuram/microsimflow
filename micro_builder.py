@@ -428,6 +428,9 @@ def create_agglomerate_mask(num_fibers, length, radius, max_bend_deg=90, max_tot
     }
     return cropped_mask, geom_data
 
+def get_agglomerate_mask(num_fibers=5, length=90, radius=2, max_bend_deg=90, max_total_bends=10, physics_mode='thermal'):
+    return create_agglomerate_mask(num_fibers, length, radius, max_bend_deg, max_total_bends, physics_mode)
+
 def calculate_protrusion_limit(filler_voxels, total_voxels, half_protrusion_vol_ratio=0.0025):
     """Calculation of adaptive protrusion tolerance based on half-value volume ratio model"""
     if half_protrusion_vol_ratio <= 0:
