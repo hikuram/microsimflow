@@ -110,7 +110,7 @@ def save_thumbnail_png(grid, filename, phase_labels=None):
     phase_labels: Phase definitions in dictionary format {ID: 'Label'}.
     """
     if phase_labels is None:
-        phase_labels = {0: 'Polymer A', 1: 'Polymer B', 2: 'Primary Inter', 3: 'Secondary Inter', 4: 'Filler'}
+        phase_labels = {0: 'Polymer A', 1: 'Polymer B', 2: 'Secondary Inter', 3: 'Primary Inter', 4: 'Filler'}
         
     plt.rcParams.update({
         'font.family': 'sans-serif',
@@ -156,8 +156,8 @@ def parse_args():
                         choices=["chfem", "puma", "both"], help="Solver for homogenisation")
     parser.add_argument("--prop_A", type=str, default=None, help="Property for Polymer A")
     parser.add_argument("--prop_B", type=str, default=None, help="Property for Polymer B")
-    parser.add_argument("--prop_inter", type=str, default=None, help="Property for Primary Contact/Tunnel phase")
     parser.add_argument("--prop_inter2", type=str, default=None, help="Property for Secondary Contact/Tunnel phase")
+    parser.add_argument("--prop_inter", type=str, default=None, help="Property for Primary Contact/Tunnel phase")
     parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")
     parser.add_argument("--tunnel_radius", type=int, default=2, 
                         help="Radius in voxels for nearest-neighbor (tunneling) detection")
@@ -179,20 +179,20 @@ def main():
     if args.physics_mode == 'thermal':
         prop_A = args.prop_A or "0.3"
         prop_B = args.prop_B or "0.3"
-        prop_primary_inter = args.prop_inter or "30.0"
         prop_secondary_inter = args.prop_inter2 or "30.0" # Safe fallback even if not present in grid
+        prop_primary_inter = args.prop_inter or "30.0"
         default_filler = "300.0"
     elif args.physics_mode == 'electrical':
         prop_A = args.prop_A or "1e-4"
         prop_B = args.prop_B or "1e-4"
-        prop_primary_inter = args.prop_inter or "1e-1"
         prop_secondary_inter = args.prop_inter2 or "1e-3"
+        prop_primary_inter = args.prop_inter or "1e-1"
         default_filler = "1e4"
     else: # mechanics
         prop_A = args.prop_A or "3.0 1.0"
         prop_B = args.prop_B or "3.0 1.0"
-        prop_primary_inter = args.prop_inter or "15.0 5.0"
         prop_secondary_inter = args.prop_inter2 or "10.0 3.0"
+        prop_primary_inter = args.prop_inter or "15.0 5.0"
         default_filler = "100.0 50.0"
 
     # Count valid recipes
@@ -202,15 +202,14 @@ def main():
     secondary_inter_id = 2
     primary_inter_id = 3
     filler_start_id = 4
-    filler_start_id = 4
     current_filler_id = filler_start_id
     
     # Initialize property mapping dictionary
     prop_map = {
         0: prop_A, 
         1: prop_B, 
-        primary_inter_id: prop_primary_inter,
-        secondary_inter_id: prop_secondary_inter
+        secondary_inter_id: prop_secondary_inter,
+        primary_inter_id: prop_primary_inter
     }
     
     print(f"--- Pipeline Start: {args.basename} ({args.physics_mode} mode, bg: {args.bg_type}, solver: {args.solver}) ---")
@@ -247,9 +246,6 @@ def main():
     shell_count_grid = np.zeros_like(comp_grid) if args.physics_mode in ['electrical', 'mechanics'] else None
     step_logs.append(f"BG({args.bg_type}):{time.time() - t0:.1f}s")
 
-
-# (main関数の中盤： BG生成直後から)
-    
     # Global placement registry for the reference configuration
     placement_registry = []
 
@@ -282,7 +278,7 @@ def main():
             'filler_id': current_filler_id,
             'inter_id': primary_inter_id, 
             'tunnel_radius': args.tunnel_radius,
-            'placement_registry': placement_registry # Added to capture geometry
+            'placement_registry': placement_registry
         }
         
         if f_type == "flake":
@@ -372,17 +368,17 @@ def main():
         # 4. Integration of final structure and creation of metadata
         final_grid = finalize_microstructure(
             current_comp, current_tpms, current_shell, args.physics_mode, 
-            primary_inter_id=primary_inter_id, 
             secondary_inter_id=secondary_inter_id, 
+            primary_inter_id=primary_inter_id, 
             filler_start_id=filler_start_id,
             contact_radius=args.contact_radius
         )
         
         phase_stats = summarize_phase_fractions(
-            final_grid, primary_inter_id=primary_inter_id, secondary_inter_id=secondary_inter_id, filler_start_id=filler_start_id
+            final_grid, secondary_inter_id=secondary_inter_id, primary_inter_id=primary_inter_id, filler_start_id=filler_start_id
         )
         
-        phase_labels = {0: 'Polymer A', 1: 'Polymer B', primary_inter_id: 'Primary Inter', secondary_inter_id: 'Secondary Inter'}
+        phase_labels = {0: 'Polymer A', 1: 'Polymer B', secondary_inter_id: 'Secondary Inter', primary_inter_id: 'Primary Inter'}
         for i in range(filler_start_id, current_filler_id):
             phase_labels[i] = f'Filler {i-filler_start_id+1}' if current_filler_id > filler_start_id + 1 else 'Filler'
 
@@ -396,8 +392,8 @@ def main():
             "Recipe": " ".join(args.recipe),
             "PolymerA_Frac": f"{phase_stats['polymer_a_fraction']:.4f}",
             "PolymerB_Frac": f"{phase_stats['polymer_b_fraction']:.4f}",
-            "Primary_Inter_Frac": f"{phase_stats['primary_interface_fraction']:.4f}",
             "Secondary_Inter_Frac": f"{phase_stats['secondary_interface_fraction']:.4f}",
+            "Primary_Inter_Frac": f"{phase_stats['primary_interface_fraction']:.4f}",
             "Filler_Frac": f"{phase_stats['filler_total_fraction']:.4f}",
             "Stretch_Ratio": str(stretch),
             "Poisson_Ratio": str(args.poisson_ratio) if stretch != 1.0 else "N/A",
@@ -431,7 +427,7 @@ def main():
                 writer.writerow([
                     "Basename", "Grid_Size", "Voxel_Size_m", "BG_Type", "Mode", "Solver", "Recipe", 
                     "Stretch_Ratio", "Poisson_Ratio",
-                    "PolymerA_Frac", "PolymerB_Frac", "Primary_Inter_Frac", "Secondary_Inter_Frac", "Filler_Frac", "Placement_Logs", 
+                    "PolymerA_Frac", "PolymerB_Frac", "Secondary_Inter_Frac", "Primary_Inter_Frac", "Filler_Frac", "Placement_Logs", 
                     "chfem_Time_s", "chfem_Kxx", "chfem_Kyy", "chfem_Kzz",
                     "puma_Time_s", "puma_Kxx", "puma_Kyy", "puma_Kzz"
                 ])
@@ -441,8 +437,8 @@ def main():
                 stretch, args.poisson_ratio if stretch != 1.0 else "N/A",
                 f"{phase_stats['polymer_a_fraction']:.4f}",
                 f"{phase_stats['polymer_b_fraction']:.4f}",
-                f"{phase_stats['primary_interface_fraction']:.4f}", 
                 f"{phase_stats['secondary_interface_fraction']:.4f}", 
+                f"{phase_stats['primary_interface_fraction']:.4f}", 
                 f"{phase_stats['filler_total_fraction']:.4f}",
                 " | ".join(current_step_logs),
                 chfem_time, chfem_kxx, chfem_kyy, chfem_kzz,
