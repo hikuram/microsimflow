@@ -78,7 +78,7 @@ def create_montage_exp4(df, seed, out_filename, scale_factor=1.5):
     cell_padding = 20  # Horizontal space between images
     row_padding = 30   # Vertical space between rows
     margin_top = 100
-    margin_left = 250  # Wide margin for detailed row labels (Grid, L, R)
+    margin_left = 300  # Wide margin for detailed row labels (Grid, L, R)
 
     # Calculate total canvas dimensions
     max_row_width = 0
