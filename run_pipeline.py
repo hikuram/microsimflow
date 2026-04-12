@@ -458,7 +458,8 @@ def main():
         update_pvd_file(pvd_filename, pvd_records)
         print(f"Updated ParaView collection: {pvd_filename}")
 
-        save_thumbnail_png(final_grid, f"{current_basename}_slice.png", phase_labels)
+        slice_filename = f"{current_basename}_slice.png"
+        save_thumbnail_png(final_grid, slice_filename, phase_labels)
 
         # 5. Execute computational solvers and aggregate results
         chfem_time = chfem_kxx = chfem_kyy = chfem_kzz = ""
