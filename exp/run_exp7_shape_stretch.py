@@ -40,12 +40,16 @@ def run():
             cmd = [
                 "python3", "run_pipeline.py",
                 "--size", "150",
-                "--physics", "electrical",
-                "--recipe", recipe,
-                "--stretch", *stretch_ratios,
-                "--seed", str(seed),
+                "--bg_type", "single",
+                "--physics_mode", "electrical",
+                "--solver", "chfem",
                 "--basename", basename,
-                "--csv_log", csv_log
+                "--csv_log", csv_log,
+                "--seed", str(seed),
+                "--stretch_ratios"
+            ] + stretch_ratios + [
+                "--poisson_ratio", "0.4",
+                "--recipe", recipe
             ]
             
             print(f"\nRunning: {' '.join(cmd)}")
