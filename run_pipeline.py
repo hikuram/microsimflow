@@ -127,6 +127,24 @@ def save_thumbnail_png(grid, filename, phase_labels=None):
     plt.imsave(filename, slice_img, cmap=custom_cmap, vmin=vmin, vmax=vmax, origin='upper')
     print(f"Saved clean thumbnail: {filename}")
 
+def update_pvd_file(pvd_filepath, dataset_records):
+    """
+    Creates or updates a ParaView Data (.pvd) file to group VTI files as a time-series.
+    This ensures ParaView correctly handles varying grid extents during deformation.
+    """
+    with open(pvd_filepath, 'w', encoding='utf-8') as f:
+        f.write('<?xml version="1.0"?>\n')
+        f.write('<VTKFile type="Collection" version="0.1" byte_order="LittleEndian">\n')
+        f.write('  <Collection>\n')
+        
+        for timestep, filepath in dataset_records:
+            # Extract basename for the 'file' attribute to ensure relative path portability
+            rel_filename = os.path.basename(filepath)
+            f.write(f'    <DataSet timestep="{timestep}" group="" part="0" file="{rel_filename}"/>\n')
+            
+        f.write('  </Collection>\n')
+        f.write('</VTKFile>\n')
+
 def export_common_legend(phase_labels, filename="common_legend.png"):
     """
     Exports a standalone legend image to be shared across all montages.
@@ -359,6 +377,9 @@ def main():
     # 3. One-Shot Stretching & Evaluation Loop
     # =========================================================================
     
+    pvd_records = []
+    pvd_filename = f"{args.basename}.pvd"
+    
     # Ensure apply_background_deformation and render_deformed_fillers are imported at the top of run_pipeline.py!
     
     for stretch in args.stretch_ratios:
@@ -428,7 +449,15 @@ def main():
             "Poisson_Ratio": str(args.poisson_ratio) if stretch != 1.0 else "N/A",
         }
         
-        export_visualization_vti(final_grid, f"{current_basename}.vti", voxel_size=args.voxel_size, metadata=metadata)
+        # Export VTI for visualization
+        vti_filename = f"{current_basename}.vti"
+        export_visualization_vti(final_grid, vti_filename, voxel_size=args.voxel_size, metadata=metadata)
+        # --- Update PVD collection after each VTI export ---
+        # Use the stretch ratio as the timestep value
+        pvd_records.append((stretch, vti_filename))
+        update_pvd_file(pvd_filename, pvd_records)
+        print(f"Updated ParaView collection: {pvd_filename}")
+
         save_thumbnail_png(final_grid, f"{current_basename}_slice.png", phase_labels)
 
         # 5. Execute computational solvers and aggregate results
@@ -457,6 +486,7 @@ def main():
                     "Basename", "Grid_Size", "Voxel_Size_m", "BG_Type", "Mode", "Solver", "Recipe", 
                     "Stretch_Ratio", "Poisson_Ratio",
                     "PolymerA_Frac", "PolymerB_Frac", "Secondary_Inter_Frac", "Primary_Inter_Frac", "Filler_Frac", "Placement_Logs", 
+                    "Slice_Image",
                     "chfem_Time_s", "chfem_Kxx", "chfem_Kyy", "chfem_Kzz",
                     "puma_Time_s", "puma_Kxx", "puma_Kyy", "puma_Kzz"
                 ])
@@ -470,6 +500,7 @@ def main():
                 f"{phase_stats['primary_interface_fraction']:.4f}", 
                 f"{phase_stats['filler_total_fraction']:.4f}",
                 " | ".join(current_step_logs),
+                slice_filename,
                 chfem_time, chfem_kxx, chfem_kyy, chfem_kzz,
                 puma_time, puma_kxx, puma_kyy, puma_kzz
             ])
