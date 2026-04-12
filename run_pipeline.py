@@ -338,7 +338,11 @@ def parse_args():
     parser.add_argument("--bg_type", type=str, default="gyroid",
                         choices=["single", "gyroid", "sea_island", "island_sea", "lamellar", "cylinder", "bcc"])
     parser.add_argument("--phaseA_ratio", type=float, default=0.57)
-    parser.add_argument("--recipe", nargs='+', required=True)
+
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--recipe", nargs='+', help="Recipe for filler placement (required for new build)")
+    group.add_argument("--recalc", action="store_true", help="Launch in recalculation mode (skip model generation)")
+    
     parser.add_argument("--basename", type=str, default="model")
     parser.add_argument("--csv_log", type=str, default="comparison_results.csv")
     parser.add_argument("--physics_mode", type=str, default="thermal",
@@ -359,7 +363,6 @@ def parse_args():
                         help="List of stretch ratios lambda along X-axis")
     parser.add_argument("--poisson_ratio", type=float, default=0.4, 
                         help="Poisson's ratio nu for transverse compression")
-    parser.add_argument("--recalc", action="store_true", help="Launch in recalculation mode (skip model generation)")
     parser.add_argument("--overwrite_props", action="store_true", help="Overwrite .nf properties with command-line arguments during recalculation")
     return parser.parse_args()
 
