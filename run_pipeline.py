@@ -105,40 +105,65 @@ def run_puma_laplace(final_grid, voxel_size, physics_mode, cond_map):
 
 def save_thumbnail_png(grid, filename, phase_labels=None):
     """
-    Save the Z-axis center slice as a PNG with a dynamic colorbar
+    Save the Z-axis center slice as a pure, margin-less PNG for lightweight storage and montage assembly.
+    Colorbars and axes are completely removed to reduce file size.
     
-    phase_labels: Phase definitions in dictionary format {ID: 'Label'}.
+    phase_labels: Phase definitions in dictionary format {ID: 'Label'}
     """
     if phase_labels is None:
         phase_labels = {0: 'Polymer A', 1: 'Polymer B', 2: 'Secondary Inter', 3: 'Primary Inter', 4: 'Filler'}
         
-    plt.rcParams.update({
-        'font.family': 'sans-serif',
-        'font.sans-serif': ['Arial', 'Liberation Sans', 'DejaVu Sans', 'sans-serif'],
-        'axes.labelsize': 12, 'xtick.labelsize': 10, 'ytick.labelsize': 10, 
-        'legend.fontsize': 10, 'savefig.bbox': 'tight'
-    })
-
-    # Calculate dynamic settings
+    # Calculate dynamic settings to maintain consistent colors across all images
     ids = list(phase_labels.keys())
-    labels = list(phase_labels.values())
     num_phases = len(ids)
-    
-    # Calculate boundary values (min-0.5 to max+0.5)
     vmin = min(ids) - 0.5
     vmax = max(ids) + 0.5
     custom_cmap = plt.get_cmap('viridis', num_phases)
 
-    fig, ax = plt.subplots()
     z_mid = grid.shape[0] // 2
     slice_img = grid[z_mid, :, :]
-    cax = ax.imshow(slice_img, cmap=custom_cmap, vmin=vmin, vmax=vmax, interpolation='nearest')
-    cbar = fig.colorbar(cax, ax=ax, ticks=ids, fraction=0.046, pad=0.04)
-    cbar.ax.set_yticklabels(labels)
+    
+    # Save the pure 2D array directly to a PNG file without any Matplotlib figure overhead
+    plt.imsave(filename, slice_img, cmap=custom_cmap, vmin=vmin, vmax=vmax, origin='upper')
+    print(f"Saved clean thumbnail: {filename}")
 
-    plt.savefig(filename)
+def export_common_legend(phase_labels, filename="common_legend.png"):
+    """
+    Exports a standalone legend image to be shared across all montages.
+    Skips generation if the file already exists to save time.
+    """
+    if os.path.exists(filename):
+        return
+        
+    plt.rcParams.update({
+        'font.family': 'sans-serif',
+        'font.sans-serif': ['Arial', 'Liberation Sans', 'DejaVu Sans', 'sans-serif'],
+        'axes.labelsize': 12, 'ytick.labelsize': 12, 
+        'savefig.bbox': 'tight'
+    })
+
+    ids = list(phase_labels.keys())
+    labels = list(phase_labels.values())
+    num_phases = len(ids)
+    
+    vmin = min(ids) - 0.5
+    vmax = max(ids) + 0.5
+    custom_cmap = plt.get_cmap('viridis', num_phases)
+
+    fig, ax = plt.subplots(figsize=(1.5, 4)) 
+    ax.axis('off') # Hide the dummy axes
+    
+    # Create a dummy ScalarMappable for the colorbar
+    sm = plt.cm.ScalarMappable(cmap=custom_cmap, norm=plt.Normalize(vmin=vmin, vmax=vmax))
+    sm.set_array([])
+    
+    cbar = fig.colorbar(sm, ax=ax, ticks=ids, fraction=1.0, pad=0.0)
+    cbar.ax.set_yticklabels(labels)
+    cbar.ax.set_title("Phase ID", pad=15, fontweight='bold')
+
+    plt.savefig(filename, dpi=200, transparent=False, facecolor='white')
     plt.close(fig)
-    print(f"Saved thumbnail: {filename}")
+    print(f"Saved common legend: {filename}")
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -381,7 +406,10 @@ def main():
         phase_labels = {0: 'Polymer A', 1: 'Polymer B', secondary_inter_id: 'Secondary Inter', primary_inter_id: 'Primary Inter'}
         for i in range(filler_start_id, current_filler_id):
             phase_labels[i] = f'Filler {i-filler_start_id+1}' if current_filler_id > filler_start_id + 1 else 'Filler'
-
+        
+        # Export the common legend once
+        export_common_legend(phase_labels)
+        
         metadata = {
             "Basename": current_basename,
             "Grid_Size": f"{final_grid.shape[2]}x{final_grid.shape[1]}x{final_grid.shape[0]}",
