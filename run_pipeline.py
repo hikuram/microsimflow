@@ -4,6 +4,7 @@ import csv
 import os
 import re
 import subprocess
+import shutil
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -56,6 +57,153 @@ def parse_chfem_log(log_path):
         print(f"chfem log parsing error: {e}")
 
     return kxx, kyy, kzz, total_time
+
+def parse_nf_properties(nf_path):
+    """Read and parse property map from an existing .nf file"""
+    prop_map = {}
+    if not os.path.exists(nf_path):
+        return prop_map
+        
+    with open(nf_path, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+        
+    in_props = False
+    for line in lines:
+        line = line.strip()
+        if not line: continue
+        
+        if line.startswith('%properties_of_materials'):
+            in_props = True
+            continue
+        elif line.startswith('%') and in_props:
+            in_props = False # Reached another section
+            
+        if in_props:
+            parts = line.split()
+            if len(parts) >= 2:
+                phase_id = int(parts[0])
+                prop_val = " ".join(parts[1:])
+                prop_map[phase_id] = prop_val
+                
+    return prop_map
+
+def run_recalculation_mode(args):
+    """Executes the recalculation pipeline using existing .raw and .nf files"""
+    if not os.path.exists(args.csv_log):
+        print(f"Error: CSV file '{args.csv_log}' not found for recalculation.")
+        return
+
+    # 1. Create a backup of the original CSV
+    backup_path = args.csv_log + ".backup"
+    shutil.copy2(args.csv_log, backup_path)
+    print(f"--- Recalculation Mode Started ---")
+    print(f"Backup created at: {backup_path}")
+
+    # Fallback properties from command-line arguments
+    if args.physics_mode == 'thermal':
+        fallback_props = {0: args.prop_A or "0.3", 1: args.prop_B or "0.3", 2: args.prop_inter2 or "30.0", 3: args.prop_inter or "30.0", 4: "300.0"}
+    elif args.physics_mode == 'electrical':
+        fallback_props = {0: args.prop_A or "1e-4", 1: args.prop_B or "1e-4", 2: args.prop_inter2 or "1e-3", 3: args.prop_inter or "1e-1", 4: "1e4"}
+    else: # mechanics
+        fallback_props = {0: args.prop_A or "3.0 1.0", 1: args.prop_B or "3.0 1.0", 2: args.prop_inter2 or "10.0 3.0", 3: args.prop_inter or "15.0 5.0", 4: "100.0 50.0"}
+
+    # Read all rows from the CSV
+    with open(args.csv_log, 'r', encoding='utf-8') as f:
+        reader = csv.reader(f)
+        header = next(reader)
+        rows = list(reader)
+
+    # Get indices of required columns
+    try:
+        idx_basename = header.index("Basename")
+        idx_grid_size = header.index("Grid_Size")
+        idx_voxel_size = header.index("Voxel_Size_m")
+        idx_mode = header.index("Mode")
+    except ValueError as e:
+        print(f"Error: CSV is missing required columns ({e})")
+        return
+
+    updated_rows = []
+
+    # 2. Force recalculation for all rows in the CSV
+    for row in rows:
+        basename = row[idx_basename]
+        grid_size_str = row[idx_grid_size]
+        voxel_size = float(row[idx_voxel_size])
+        mode = row[idx_mode]
+
+        print(f"\nRecalculating: {basename}")
+        
+        raw_file = f"{basename}.raw"
+        nf_file = f"{basename}.nf"
+
+        if not os.path.exists(raw_file):
+            print(f"  Skipping: {raw_file} not found.")
+            updated_rows.append(row)
+            continue
+
+        # Parse Grid_Size assuming "X x Y x Z" format
+        dim_parts = grid_size_str.split('x')
+        nx, ny, nz = int(dim_parts[0]), int(dim_parts[1]), int(dim_parts[2])
+        
+        # Restore as 3D numpy array (Z, Y, X) from raw binary
+        final_grid = np.fromfile(raw_file, dtype=np.uint8).reshape((nz, ny, nx))
+
+        # 3. Determine properties
+        prop_map = parse_nf_properties(nf_file)
+        if args.overwrite_props or not prop_map:
+            print("  Overwriting properties from command-line arguments...")
+            # Overwrite based on actual IDs present in the grid
+            unique_ids = np.unique(final_grid)
+            for uid in unique_ids:
+                if uid in fallback_props:
+                    prop_map[uid] = fallback_props[uid]
+                elif uid >= 4: # Filler ID fallback
+                    prop_map[uid] = fallback_props[4] 
+
+            # Re-export .nf for chfem with updated properties
+            export_chfem_inputs(final_grid, basename, voxel_size, mode, prop_map)
+
+        # 4. Execute solvers
+        chfem_time = chfem_kxx = chfem_kyy = chfem_kzz = ""
+        puma_time = puma_kxx = puma_kyy = puma_kzz = ""
+
+        if args.solver in ["chfem", "both"]:
+            log_file = f"{basename}_metrics.txt"
+            subprocess.run(["chfem_exec", nf_file, raw_file, "-m", log_file])
+            ckx, cky, ckz, ctime = parse_chfem_log(log_file)
+            if ckx is not None:
+                chfem_time, chfem_kxx, chfem_kyy, chfem_kzz = f"{ctime:.2f}", ckx, cky, ckz
+
+        if args.solver in ["puma", "both"]:
+            # Note: Splitting string to handle tensor inputs in mechanics mode if necessary
+            cond_map = {k: float(v.split()[0]) for k, v in prop_map.items()} 
+            pkx, pky, pkz, ptime = run_puma_laplace(final_grid, voxel_size, mode, cond_map)
+            if pkx is not None:
+                puma_time, puma_kxx, puma_kyy, puma_kzz = f"{ptime:.2f}", pkx, pky, pkz
+
+        # Update respective columns in the row
+        try:
+            row[header.index("chfem_Time_s")] = chfem_time
+            row[header.index("chfem_Kxx")] = chfem_kxx
+            row[header.index("chfem_Kyy")] = chfem_kyy
+            row[header.index("chfem_Kzz")] = chfem_kzz
+            row[header.index("puma_Time_s")] = puma_time
+            row[header.index("puma_Kxx")] = puma_kxx
+            row[header.index("puma_Kyy")] = puma_kyy
+            row[header.index("puma_Kzz")] = puma_kzz
+        except ValueError:
+            pass # Ignore if columns do not exist in older CSV formats
+            
+        updated_rows.append(row)
+
+    # 5. Overwrite the CSV log file
+    with open(args.csv_log, mode='w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        writer.writerows(updated_rows)
+        
+    print(f"\n--- Recalculation Complete. Saved to {args.csv_log} ---")
 
 def run_puma_laplace(final_grid, voxel_size, physics_mode, cond_map):
     """Solve the Laplace equation (thermal/electrical conduction) using PuMA's Python API"""
@@ -211,10 +359,18 @@ def parse_args():
                         help="List of stretch ratios lambda along X-axis")
     parser.add_argument("--poisson_ratio", type=float, default=0.4, 
                         help="Poisson's ratio nu for transverse compression")
+    parser.add_argument("--recalc", action="store_true", help="Launch in recalculation mode (skip model generation)")
+    parser.add_argument("--overwrite_props", action="store_true", help="Overwrite .nf properties with command-line arguments during recalculation")
     return parser.parse_args()
 
 def main():
     args = parse_args()
+    
+    # --- Recalculation Mode Branch ---
+    if getattr(args, 'recalc', False):
+        run_recalculation_mode(args)
+        return  # Exit here if in recalculation mode
+    
     # --- Fix the generator if a seed is specified ---
     if args.seed is not None:
         set_random_seed(args.seed)
@@ -464,9 +620,9 @@ def main():
         # 5. Execute computational solvers and aggregate results
         chfem_time = chfem_kxx = chfem_kyy = chfem_kzz = ""
         puma_time = puma_kxx = puma_kyy = puma_kzz = ""
-
+        export_chfem_inputs(final_grid, current_basename, voxel_size=args.voxel_size, physics_mode=args.physics_mode, prop_map=prop_map)
+        
         if args.solver in ["chfem", "both"]:
-            export_chfem_inputs(final_grid, current_basename, voxel_size=args.voxel_size, physics_mode=args.physics_mode, prop_map=prop_map)
             log_file = f"{current_basename}_metrics.txt"
             subprocess.run(["chfem_exec", f"{current_basename}.nf", f"{current_basename}.raw", "-m", log_file])
             ckx, cky, ckz, ctime = parse_chfem_log(log_file)
