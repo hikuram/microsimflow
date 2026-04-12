@@ -53,7 +53,6 @@ python3 exp/run_exp4_scale_check.py     # RVE scale, spatial resolution, and com
 python3 exp/run_exp5_morphology.py      # Phase morphology effects (Lamellar, Cylinder, Gyroid, Sea-Island)
 python3 exp/run_exp6_filler.py          # Filler shape reinforcement comparison (Sphere, Flake, Fiber)
 python3 exp/run_exp7_shape_stretch.py   # Microstructure deformation under mechanical stretching
-python3 exp/run_sweep_hybrid_scale.py   # Scaled hybrid filler sweep including Carbon Black (CB) limits
 ```
 
 ### 2. Plotting Results
@@ -68,7 +67,6 @@ python3 exp/plot_exp4_scale_check.py
 python3 exp/plot_exp5_morphology.py
 python3 exp/plot_exp6_filler.py
 python3 exp/plot_exp7_shape_stretch.py
-python3 exp/plot_sweep_hybrid_scale.py
 ```
 
 **What these scripts generate:**
