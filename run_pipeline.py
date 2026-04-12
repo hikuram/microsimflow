@@ -178,7 +178,8 @@ def parse_args():
     parser.add_argument("--physics_mode", type=str, default="thermal",
                         choices=["thermal", "electrical", "mechanics"])
     parser.add_argument("--solver", type=str, default="both",
-                        choices=["chfem", "puma", "both"], help="Solver for homogenisation")
+                        choices=["chfem", "puma", "both", "skip"],
+                        help="Solver for homogenisation. Use 'skip' to only build the model.")
     parser.add_argument("--prop_A", type=str, default=None, help="Property for Polymer A")
     parser.add_argument("--prop_B", type=str, default=None, help="Property for Polymer B")
     parser.add_argument("--prop_inter2", type=str, default=None, help="Property for Secondary Contact/Tunnel phase")
