@@ -4,6 +4,7 @@ import csv
 import os
 import re
 import subprocess
+import shutil
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -57,6 +58,153 @@ def parse_chfem_log(log_path):
 
     return kxx, kyy, kzz, total_time
 
+def parse_nf_properties(nf_path):
+    """Read and parse property map from an existing .nf file"""
+    prop_map = {}
+    if not os.path.exists(nf_path):
+        return prop_map
+        
+    with open(nf_path, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+        
+    in_props = False
+    for line in lines:
+        line = line.strip()
+        if not line: continue
+        
+        if line.startswith('%properties_of_materials'):
+            in_props = True
+            continue
+        elif line.startswith('%') and in_props:
+            in_props = False # Reached another section
+            
+        if in_props:
+            parts = line.split()
+            if len(parts) >= 2:
+                phase_id = int(parts[0])
+                prop_val = " ".join(parts[1:])
+                prop_map[phase_id] = prop_val
+                
+    return prop_map
+
+def run_recalculation_mode(args):
+    """Executes the recalculation pipeline using existing .raw and .nf files"""
+    if not os.path.exists(args.csv_log):
+        print(f"Error: CSV file '{args.csv_log}' not found for recalculation.")
+        return
+
+    # 1. Create a backup of the original CSV
+    backup_path = args.csv_log + ".backup"
+    shutil.copy2(args.csv_log, backup_path)
+    print(f"--- Recalculation Mode Started ---")
+    print(f"Backup created at: {backup_path}")
+
+    # Fallback properties from command-line arguments
+    if args.physics_mode == 'thermal':
+        fallback_props = {0: args.prop_A or "0.3", 1: args.prop_B or "0.3", 2: args.prop_inter2 or "30.0", 3: args.prop_inter or "30.0", 4: "300.0"}
+    elif args.physics_mode == 'electrical':
+        fallback_props = {0: args.prop_A or "1e-4", 1: args.prop_B or "1e-4", 2: args.prop_inter2 or "1e-3", 3: args.prop_inter or "1e-1", 4: "1e4"}
+    else: # mechanics
+        fallback_props = {0: args.prop_A or "3.0 1.0", 1: args.prop_B or "3.0 1.0", 2: args.prop_inter2 or "10.0 3.0", 3: args.prop_inter or "15.0 5.0", 4: "100.0 50.0"}
+
+    # Read all rows from the CSV
+    with open(args.csv_log, 'r', encoding='utf-8') as f:
+        reader = csv.reader(f)
+        header = next(reader)
+        rows = list(reader)
+
+    # Get indices of required columns
+    try:
+        idx_basename = header.index("Basename")
+        idx_grid_size = header.index("Grid_Size")
+        idx_voxel_size = header.index("Voxel_Size_m")
+        idx_mode = header.index("Mode")
+    except ValueError as e:
+        print(f"Error: CSV is missing required columns ({e})")
+        return
+
+    updated_rows = []
+
+    # 2. Force recalculation for all rows in the CSV
+    for row in rows:
+        basename = row[idx_basename]
+        grid_size_str = row[idx_grid_size]
+        voxel_size = float(row[idx_voxel_size])
+        mode = row[idx_mode]
+
+        print(f"\nRecalculating: {basename}")
+        
+        raw_file = f"{basename}.raw"
+        nf_file = f"{basename}.nf"
+
+        if not os.path.exists(raw_file):
+            print(f"  Skipping: {raw_file} not found.")
+            updated_rows.append(row)
+            continue
+
+        # Parse Grid_Size assuming "X x Y x Z" format
+        dim_parts = grid_size_str.split('x')
+        nx, ny, nz = int(dim_parts[0]), int(dim_parts[1]), int(dim_parts[2])
+        
+        # Restore as 3D numpy array (Z, Y, X) from raw binary
+        final_grid = np.fromfile(raw_file, dtype=np.uint8).reshape((nz, ny, nx))
+
+        # 3. Determine properties
+        prop_map = parse_nf_properties(nf_file)
+        if args.overwrite_props or not prop_map:
+            print("  Overwriting properties from command-line arguments...")
+            # Overwrite based on actual IDs present in the grid
+            unique_ids = np.unique(final_grid)
+            for uid in unique_ids:
+                if uid in fallback_props:
+                    prop_map[uid] = fallback_props[uid]
+                elif uid >= 4: # Filler ID fallback
+                    prop_map[uid] = fallback_props[4] 
+
+            # Re-export .nf for chfem with updated properties
+            export_chfem_inputs(final_grid, basename, voxel_size, mode, prop_map)
+
+        # 4. Execute solvers
+        chfem_time = chfem_kxx = chfem_kyy = chfem_kzz = ""
+        puma_time = puma_kxx = puma_kyy = puma_kzz = ""
+
+        if args.solver in ["chfem", "both"]:
+            log_file = f"{basename}_metrics.txt"
+            subprocess.run(["chfem_exec", nf_file, raw_file, "-m", log_file])
+            ckx, cky, ckz, ctime = parse_chfem_log(log_file)
+            if ckx is not None:
+                chfem_time, chfem_kxx, chfem_kyy, chfem_kzz = f"{ctime:.2f}", ckx, cky, ckz
+
+        if args.solver in ["puma", "both"]:
+            # Note: Splitting string to handle tensor inputs in mechanics mode if necessary
+            cond_map = {k: float(v.split()[0]) for k, v in prop_map.items()} 
+            pkx, pky, pkz, ptime = run_puma_laplace(final_grid, voxel_size, mode, cond_map)
+            if pkx is not None:
+                puma_time, puma_kxx, puma_kyy, puma_kzz = f"{ptime:.2f}", pkx, pky, pkz
+
+        # Update respective columns in the row
+        try:
+            row[header.index("chfem_Time_s")] = chfem_time
+            row[header.index("chfem_Kxx")] = chfem_kxx
+            row[header.index("chfem_Kyy")] = chfem_kyy
+            row[header.index("chfem_Kzz")] = chfem_kzz
+            row[header.index("puma_Time_s")] = puma_time
+            row[header.index("puma_Kxx")] = puma_kxx
+            row[header.index("puma_Kyy")] = puma_kyy
+            row[header.index("puma_Kzz")] = puma_kzz
+        except ValueError:
+            pass # Ignore if columns do not exist in older CSV formats
+            
+        updated_rows.append(row)
+
+    # 5. Overwrite the CSV log file
+    with open(args.csv_log, mode='w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        writer.writerows(updated_rows)
+        
+    print(f"\n--- Recalculation Complete. Saved to {args.csv_log} ---")
+
 def run_puma_laplace(final_grid, voxel_size, physics_mode, cond_map):
     """Solve the Laplace equation (thermal/electrical conduction) using PuMA's Python API"""
     try:
@@ -105,40 +253,83 @@ def run_puma_laplace(final_grid, voxel_size, physics_mode, cond_map):
 
 def save_thumbnail_png(grid, filename, phase_labels=None):
     """
-    Save the Z-axis center slice as a PNG with a dynamic colorbar
+    Save the Z-axis center slice as a pure, margin-less PNG for lightweight storage and montage assembly.
+    Colorbars and axes are completely removed to reduce file size.
     
-    phase_labels: Phase definitions in dictionary format {ID: 'Label'}.
+    phase_labels: Phase definitions in dictionary format {ID: 'Label'}
     """
     if phase_labels is None:
         phase_labels = {0: 'Polymer A', 1: 'Polymer B', 2: 'Secondary Inter', 3: 'Primary Inter', 4: 'Filler'}
         
-    plt.rcParams.update({
-        'font.family': 'sans-serif',
-        'font.sans-serif': ['Arial', 'Liberation Sans', 'DejaVu Sans', 'sans-serif'],
-        'axes.labelsize': 12, 'xtick.labelsize': 10, 'ytick.labelsize': 10, 
-        'legend.fontsize': 10, 'savefig.bbox': 'tight'
-    })
-
-    # Calculate dynamic settings
+    # Calculate dynamic settings to maintain consistent colors across all images
     ids = list(phase_labels.keys())
-    labels = list(phase_labels.values())
     num_phases = len(ids)
-    
-    # Calculate boundary values (min-0.5 to max+0.5)
     vmin = min(ids) - 0.5
     vmax = max(ids) + 0.5
     custom_cmap = plt.get_cmap('viridis', num_phases)
 
-    fig, ax = plt.subplots()
     z_mid = grid.shape[0] // 2
     slice_img = grid[z_mid, :, :]
-    cax = ax.imshow(slice_img, cmap=custom_cmap, vmin=vmin, vmax=vmax, interpolation='nearest')
-    cbar = fig.colorbar(cax, ax=ax, ticks=ids, fraction=0.046, pad=0.04)
-    cbar.ax.set_yticklabels(labels)
+    
+    # Save the pure 2D array directly to a PNG file without any Matplotlib figure overhead
+    plt.imsave(filename, slice_img, cmap=custom_cmap, vmin=vmin, vmax=vmax, origin='upper')
+    print(f"Saved clean thumbnail: {filename}")
 
-    plt.savefig(filename)
+def update_pvd_file(pvd_filepath, dataset_records):
+    """
+    Creates or updates a ParaView Data (.pvd) file to group VTI files as a time-series.
+    This ensures ParaView correctly handles varying grid extents during deformation.
+    """
+    with open(pvd_filepath, 'w', encoding='utf-8') as f:
+        f.write('<?xml version="1.0"?>\n')
+        f.write('<VTKFile type="Collection" version="0.1" byte_order="LittleEndian">\n')
+        f.write('  <Collection>\n')
+        
+        for timestep, filepath in dataset_records:
+            # Extract basename for the 'file' attribute to ensure relative path portability
+            rel_filename = os.path.basename(filepath)
+            f.write(f'    <DataSet timestep="{timestep}" group="" part="0" file="{rel_filename}"/>\n')
+            
+        f.write('  </Collection>\n')
+        f.write('</VTKFile>\n')
+
+def export_common_legend(phase_labels, filename="common_legend.png"):
+    """
+    Exports a standalone legend image to be shared across all montages.
+    Skips generation if the file already exists to save time.
+    """
+    if os.path.exists(filename):
+        return
+        
+    plt.rcParams.update({
+        'font.family': 'sans-serif',
+        'font.sans-serif': ['Arial', 'Liberation Sans', 'DejaVu Sans', 'sans-serif'],
+        'axes.labelsize': 12, 'ytick.labelsize': 12, 
+        'savefig.bbox': 'tight'
+    })
+
+    ids = list(phase_labels.keys())
+    labels = list(phase_labels.values())
+    num_phases = len(ids)
+    
+    vmin = min(ids) - 0.5
+    vmax = max(ids) + 0.5
+    custom_cmap = plt.get_cmap('viridis', num_phases)
+
+    fig, ax = plt.subplots(figsize=(1.5, 4)) 
+    ax.axis('off') # Hide the dummy axes
+    
+    # Create a dummy ScalarMappable for the colorbar
+    sm = plt.cm.ScalarMappable(cmap=custom_cmap, norm=plt.Normalize(vmin=vmin, vmax=vmax))
+    sm.set_array([])
+    
+    cbar = fig.colorbar(sm, ax=ax, ticks=ids, fraction=1.0, pad=0.0)
+    cbar.ax.set_yticklabels(labels)
+    cbar.ax.set_title("Phase ID", pad=15, fontweight='bold')
+
+    plt.savefig(filename, dpi=200, transparent=False, facecolor='white')
     plt.close(fig)
-    print(f"Saved thumbnail: {filename}")
+    print(f"Saved common legend: {filename}")
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -147,13 +338,18 @@ def parse_args():
     parser.add_argument("--bg_type", type=str, default="gyroid",
                         choices=["single", "gyroid", "sea_island", "island_sea", "lamellar", "cylinder", "bcc"])
     parser.add_argument("--phaseA_ratio", type=float, default=0.57)
-    parser.add_argument("--recipe", nargs='+', required=True)
+
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--recipe", nargs='+', help="Recipe for filler placement (required for new build)")
+    group.add_argument("--recalc", action="store_true", help="Launch in recalculation mode (skip model generation)")
+    
     parser.add_argument("--basename", type=str, default="model")
     parser.add_argument("--csv_log", type=str, default="comparison_results.csv")
     parser.add_argument("--physics_mode", type=str, default="thermal",
                         choices=["thermal", "electrical", "mechanics"])
     parser.add_argument("--solver", type=str, default="both",
-                        choices=["chfem", "puma", "both"], help="Solver for homogenisation")
+                        choices=["chfem", "puma", "both", "skip"],
+                        help="Solver for homogenisation. Use 'skip' to only build the model.")
     parser.add_argument("--prop_A", type=str, default=None, help="Property for Polymer A")
     parser.add_argument("--prop_B", type=str, default=None, help="Property for Polymer B")
     parser.add_argument("--prop_inter2", type=str, default=None, help="Property for Secondary Contact/Tunnel phase")
@@ -167,10 +363,17 @@ def parse_args():
                         help="List of stretch ratios lambda along X-axis")
     parser.add_argument("--poisson_ratio", type=float, default=0.4, 
                         help="Poisson's ratio nu for transverse compression")
+    parser.add_argument("--overwrite_props", action="store_true", help="Overwrite .nf properties with command-line arguments during recalculation")
     return parser.parse_args()
 
 def main():
     args = parse_args()
+    
+    # --- Recalculation Mode Branch ---
+    if getattr(args, 'recalc', False):
+        run_recalculation_mode(args)
+        return  # Exit here if in recalculation mode
+    
     # --- Fix the generator if a seed is specified ---
     if args.seed is not None:
         set_random_seed(args.seed)
@@ -333,6 +536,9 @@ def main():
     # 3. One-Shot Stretching & Evaluation Loop
     # =========================================================================
     
+    pvd_records = []
+    pvd_filename = f"{args.basename}.pvd"
+    
     # Ensure apply_background_deformation and render_deformed_fillers are imported at the top of run_pipeline.py!
     
     for stretch in args.stretch_ratios:
@@ -381,7 +587,10 @@ def main():
         phase_labels = {0: 'Polymer A', 1: 'Polymer B', secondary_inter_id: 'Secondary Inter', primary_inter_id: 'Primary Inter'}
         for i in range(filler_start_id, current_filler_id):
             phase_labels[i] = f'Filler {i-filler_start_id+1}' if current_filler_id > filler_start_id + 1 else 'Filler'
-
+        
+        # Export the common legend once
+        export_common_legend(phase_labels)
+        
         metadata = {
             "Basename": current_basename,
             "Grid_Size": f"{final_grid.shape[2]}x{final_grid.shape[1]}x{final_grid.shape[0]}",
@@ -399,15 +608,24 @@ def main():
             "Poisson_Ratio": str(args.poisson_ratio) if stretch != 1.0 else "N/A",
         }
         
-        export_visualization_vti(final_grid, f"{current_basename}.vti", voxel_size=args.voxel_size, metadata=metadata)
-        save_thumbnail_png(final_grid, f"{current_basename}_slice.png", phase_labels)
+        # Export VTI for visualization
+        vti_filename = f"{current_basename}.vti"
+        export_visualization_vti(final_grid, vti_filename, voxel_size=args.voxel_size, metadata=metadata)
+        # --- Update PVD collection after each VTI export ---
+        # Use the stretch ratio as the timestep value
+        pvd_records.append((stretch, vti_filename))
+        update_pvd_file(pvd_filename, pvd_records)
+        print(f"Updated ParaView collection: {pvd_filename}")
+
+        slice_filename = f"{current_basename}_slice.png"
+        save_thumbnail_png(final_grid, slice_filename, phase_labels)
 
         # 5. Execute computational solvers and aggregate results
         chfem_time = chfem_kxx = chfem_kyy = chfem_kzz = ""
         puma_time = puma_kxx = puma_kyy = puma_kzz = ""
-
+        export_chfem_inputs(final_grid, current_basename, voxel_size=args.voxel_size, physics_mode=args.physics_mode, prop_map=prop_map)
+        
         if args.solver in ["chfem", "both"]:
-            export_chfem_inputs(final_grid, current_basename, voxel_size=args.voxel_size, physics_mode=args.physics_mode, prop_map=prop_map)
             log_file = f"{current_basename}_metrics.txt"
             subprocess.run(["chfem_exec", f"{current_basename}.nf", f"{current_basename}.raw", "-m", log_file])
             ckx, cky, ckz, ctime = parse_chfem_log(log_file)
@@ -428,6 +646,7 @@ def main():
                     "Basename", "Grid_Size", "Voxel_Size_m", "BG_Type", "Mode", "Solver", "Recipe", 
                     "Stretch_Ratio", "Poisson_Ratio",
                     "PolymerA_Frac", "PolymerB_Frac", "Secondary_Inter_Frac", "Primary_Inter_Frac", "Filler_Frac", "Placement_Logs", 
+                    "Slice_Image",
                     "chfem_Time_s", "chfem_Kxx", "chfem_Kyy", "chfem_Kzz",
                     "puma_Time_s", "puma_Kxx", "puma_Kyy", "puma_Kzz"
                 ])
@@ -441,6 +660,7 @@ def main():
                 f"{phase_stats['primary_interface_fraction']:.4f}", 
                 f"{phase_stats['filler_total_fraction']:.4f}",
                 " | ".join(current_step_logs),
+                slice_filename,
                 chfem_time, chfem_kxx, chfem_kyy, chfem_kzz,
                 puma_time, puma_kxx, puma_kyy, puma_kzz
             ])

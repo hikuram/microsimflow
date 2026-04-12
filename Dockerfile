@@ -43,8 +43,10 @@ RUN micromamba install -y -n base -c conda-forge \
     tifffile \
     tqdm \
     matplotlib \
+    seaborn \
     pandas \
     pyvista \
+    pillow \
     numba \
     && micromamba clean --all --yes
 
