@@ -166,14 +166,14 @@ def plot_exp6_filler():
     print("\n--- Plotting Stiffness Comparison ---")
     
     # Check if conductivity/stiffness solver results are available
-    has_chfem = all(col in df.columns for col in ['chfem_Kxx', 'chfem_Kyy', 'chfem_Kzz'])
+    has_chfem = all(col in df.columns for col in ['chfem_Txx', 'chfem_Tyy', 'chfem_Tzz'])
     
     if not has_chfem:
         print("Warning: Solver results are missing. Plotting skipped.")
         return
 
     # Calculate average stiffness across XYZ directions (random orientation assumes isotropy)
-    df['Avg_Stiffness'] = df[['chfem_Kxx', "chfem_Kyy", "chfem_Kzz"]].mean(axis=1)
+    df['Avg_Stiffness'] = df[['chfem_Txx', "chfem_Tyy", "chfem_Tzz"]].mean(axis=1)
     
     # Clean NaNs before plotting
     df_plot = df.dropna(subset=['Avg_Stiffness'])
