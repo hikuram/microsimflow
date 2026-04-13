@@ -676,7 +676,7 @@ def place_adaptive_fibers(comp_grid, tpms_grid, target_vol_frac, length, radius,
                 continue
 
             consecutive_fails = 0
-            consecutive_fails = 0apply_brush_and_write(comp_grid, backbone, radius, physics_mode, shell_count_grid, filler_id, inter_id, tunnel_radius)
+            apply_brush_and_write(comp_grid, backbone, radius, physics_mode, shell_count_grid, filler_id, inter_id, tunnel_radius)
 
             current_total = np.sum(comp_grid >= 2)
             added_voxels = current_total - placed_voxels
