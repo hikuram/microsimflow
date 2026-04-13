@@ -211,7 +211,6 @@ def get_flake_mask(radius, thickness, physics_mode='thermal'):
 
 def create_staggered_flakes_mask(radius=15, layer_thickness=2, min_layers=1, max_layers=4, max_offset_pct=20):
     """Generate a compound stamp of staggered platelets, rigorously standardizing its centroid."""
-    rng = np.random.default_rng()
     num_layers = rng.integers(min_layers, max_layers + 1)
     max_offset_px = radius * (max_offset_pct / 100.0)
     box_size = int(math.ceil((radius + num_layers * max_offset_px) * 2 + num_layers * layer_thickness)) + 4
@@ -768,8 +767,6 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
                          protrusion_coef=0.0025, log_file=None,
                          physics_mode='thermal', shell_count_grid=None,
                          filler_id=4, inter_id=3, tunnel_radius=2, placement_registry=None):
-    # Initialize RNG inside the function for safety if not using global
-    rng = np.random.default_rng()
     
     shape = comp_grid.shape
     total_voxels = comp_grid.size
