@@ -294,18 +294,43 @@ def save_thumbnail_png(grid, filename, phase_labels=None):
     plt.imsave(filename, slice_img, cmap=custom_cmap, vmin=vmin, vmax=vmax, origin='upper')
     print(f"Saved clean thumbnail: {filename}")
 
+def export_vtm_wrapper(vti_filepath, vtm_filepath):
+    """
+    Creates a lightweight VTM (MultiBlock) wrapper that references the original VTI file.
+    This safely bypasses ParaView's extent caching issue during volume rendering.
+    """
+    # Calculate relative path from 'pvd/' directory to the original VTI file (../file.vti)
+    rel_vti_path = f"../{os.path.basename(vti_filepath)}"
+    
+    vtm_content = f"""<?xml version="1.0"?>
+<VTKFile type="vtkMultiBlockDataSet" version="1.0" byte_order="LittleEndian">
+  <vtkMultiBlockDataSet>
+    <DataSet index="0" file="{rel_vti_path}"/>
+  </vtkMultiBlockDataSet>
+</VTKFile>
+"""
+    # Ensure the target directory exists
+    os.makedirs(os.path.dirname(vtm_filepath), exist_ok=True)
+    
+    with open(vtm_filepath, 'w', encoding='utf-8') as f:
+        f.write(vtm_content)
+
 def update_pvd_file(pvd_filepath, dataset_records):
     """
-    Creates or updates a ParaView Data (.pvd) file to group VTI files as a time-series.
+    Creates or updates a ParaView Data (.pvd) file to group VTM wrappers as a time-series.
     This ensures ParaView correctly handles varying grid extents during deformation.
     """
+    # Ensure the target directory exists
+    os.makedirs(os.path.dirname(pvd_filepath), exist_ok=True)
+    
     with open(pvd_filepath, 'w', encoding='utf-8') as f:
         f.write('<?xml version="1.0"?>\n')
         f.write('<VTKFile type="Collection" version="0.1" byte_order="LittleEndian">\n')
         f.write('  <Collection>\n')
         
         for timestep, filepath in dataset_records:
-            # Extract basename for the 'file' attribute to ensure relative path portability
+            # Extract basename for the 'file' attribute.
+            # Since both PVD and VTM are in the 'pvd/' directory, only the filename is needed.
             rel_filename = os.path.basename(filepath)
             f.write(f'    <DataSet timestep="{timestep}" group="" part="0" file="{rel_filename}"/>\n')
             
@@ -638,14 +663,20 @@ def main():
             "Poisson_Ratio": str(args.poisson_ratio) if stretch != 1.0 else "N/A",
         }
         
-        # Export VTI for visualization
+        # Export VTI for visualization (in the current directory)
         vti_filename = f"{current_basename}.vti"
         export_visualization_vti(final_grid, vti_filename, voxel_size=args.voxel_size, metadata=metadata)
-        # --- Update PVD collection after each VTI export ---
+        
+        # --- Create VTM wrapper and update PVD in the 'pvd/' subdirectory ---
+        pvd_dir = "pvd"
+        vtm_filename = os.path.join(pvd_dir, f"{current_basename}.vtm")
+        export_vtm_wrapper(vti_filename, vtm_filename)
+        
         # Use the stretch ratio as the timestep value
-        pvd_records.append((stretch, vti_filename))
+        pvd_filename = os.path.join(pvd_dir, f"{args.basename}.pvd")
+        pvd_records.append((stretch, vtm_filename))
         update_pvd_file(pvd_filename, pvd_records)
-        print(f"Updated ParaView collection: {pvd_filename}")
+        print(f"Generated VTM wrapper and updated PVD collection in: {pvd_filename}")
 
         slice_filename = f"{current_basename}_slice.png"
         save_thumbnail_png(final_grid, slice_filename, phase_labels)
