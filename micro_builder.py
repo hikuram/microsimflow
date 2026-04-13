@@ -167,44 +167,93 @@ def create_rotated_grid_with_normal(shape, angles):
     normal_vector = R @ np.array([1, 0, 0])
     return rotated_coords[2,:].reshape(shape), rotated_coords[1,:].reshape(shape), rotated_coords[0,:].reshape(shape), normal_vector
 
-def get_sphere_mask(radius, physics_mode='thermal'):
-    """Perfect sphere filler standardized for kinematics"""
-    size = int(radius * 2 + 2)
-    z, y, x = np.indices((size, size, size))
-    cz, cy, cx = size//2, size//2, size//2
-    mask = (z - cz)**2 + (y - cy)**2 + (x - cx)**2 <= radius**2
+def create_fiber_mask(length, radius, max_bend_deg=90, max_total_bends=10):
+    """Generate a mask for a single flexible fiber with fast brush pasting"""
+    box_size = int(length * 2 + radius * 2 + 5)
+    mask = np.zeros((box_size, box_size, box_size), dtype=bool)
     
-    cm_global_abs = np.array([cz, cy, cx], dtype=float)
+    start_pos = np.array([box_size//2, box_size//2, box_size//2], dtype=float)
+    backbone = [np.round(start_pos).astype(int)]
+    current_pos = start_pos
+    vec = rng.standard_normal(3)
+    vec /= np.linalg.norm(vec)
+    bends_made = 0
+
+    for _ in range(int(length)):
+        next_pos_f = current_pos + vec
+        next_pos_i = np.round(next_pos_f).astype(int)
+        if any(p < radius or p >= box_size - radius for p in next_pos_i): break
+        if bends_made < max_total_bends and rng.random() < (max_total_bends / length):
+            angle_rad = np.radians(rng.uniform(10, max_bend_deg))
+            noise = rng.standard_normal(3)
+            noise -= noise.dot(vec) * vec
+            if np.linalg.norm(noise) > 0:
+                noise /= np.linalg.norm(noise)
+                new_vec = vec * np.cos(angle_rad) + noise * np.sin(angle_rad)
+                vec = new_vec / np.linalg.norm(new_vec)
+                bends_made += 1
+        current_pos = current_pos + vec
+        backbone.append(np.round(current_pos).astype(int))
+
+    # Fast vectorized pasting
+    rz, ry, rx = np.ogrid[-radius:radius+1, -radius:radius+1, -radius:radius+1]
+    brush = rx**2 + ry**2 + rz**2 <= radius**2
+    bz, by, bx = np.where(brush)
+    
+    for (z, y, x) in backbone:
+        gz, gy, gx = bz + z - radius, by + y - radius, bx + x - radius
+        mask[gz, gy, gx] = True
+
+    cm_global_abs = np.mean(backbone, axis=0)
     cropped_mask, offset = crop_and_standardize(mask, cm_global_abs)
+    local_kinematics = np.array(backbone) - cm_global_abs
     
     geom_data = {
-        'base_type': 'sphere', 'radius': radius,
-        'R_orig': np.eye(3).tolist(), 'local_kinematics': [[0.0, 0.0, 0.0]],
+        'base_type': 'fiber', 'radius': radius,
+        'R_orig': np.eye(3).tolist(), 'local_kinematics': local_kinematics.tolist(),
         'offset_center_to_cm': offset.tolist()
     }
     return cropped_mask, geom_data
 
-def get_flake_mask(radius, thickness, physics_mode='thermal'):
-    """Flake-shaped filler with Polar Decomposition support"""
-    size = int(radius * 2 + 4)
-    angles = rng.random(3) * 2 * np.pi
-    az, ay, ax = angles
-    R_orig = np.array([[math.cos(az), -math.sin(az), 0], [math.sin(az), math.cos(az), 0], [0, 0, 1]]) @ \
-             np.array([[math.cos(ay), 0, math.sin(ay)], [0, 1, 0], [-math.sin(ay), 0, math.cos(ay)]]) @ \
-             np.array([[1, 0, 0], [0, math.cos(ax), -math.sin(ax)], [0, math.sin(ax), math.cos(ax)]])
-             
-    Z, Y, X = np.indices((size, size, size))
-    Z = Z - size//2; Y = Y - size//2; X = X - size//2
-    rot = R_orig @ np.stack([Z.ravel(), Y.ravel(), X.ravel()])
-    Zr, Yr, Xr = rot[0,:].reshape((size, size, size)), rot[1,:].reshape((size, size, size)), rot[2,:].reshape((size, size, size))
+def create_agglomerate_mask(num_fibers, length, radius, max_bend_deg=90, max_total_bends=10, physics_mode='thermal', filler_id=4, inter_id=3):
+    box_size = int(length + radius * 2 + 5)
+    combined_mask = np.zeros((box_size, box_size, box_size), dtype=np.uint8)
+    start_radius = radius * 2
+    all_backbones = []
     
-    mask = (Xr**2 + Yr**2 <= radius**2) & (np.abs(Zr) <= thickness/2)
-    cm_global_abs = np.array([size//2, size//2, size//2], dtype=float)
-    cropped_mask, offset = crop_and_standardize(mask, cm_global_abs)
+    for _ in range(num_fibers):
+        fiber_mask, fiber_bb = _create_agglom_single_fiber_mask(length, radius, max_bend_deg, max_total_bends)
+        offset = np.round(rng.standard_normal(3) * start_radius).astype(int)
+        shifted_bb = np.array(fiber_bb) + offset
+        all_backbones.append(shifted_bb)
+        shift_z, shift_y, shift_x = offset
+        
+        z_start, z_end = max(0, shift_z), min(box_size, box_size + shift_z)
+        y_start, y_end = max(0, shift_y), min(box_size, box_size + shift_y)
+        x_start, x_end = max(0, shift_x), min(box_size, box_size + shift_x)
+        
+        fz_start = max(0, -shift_z); fz_end = fz_start + (z_end - z_start)
+        fy_start = max(0, -shift_y); fy_end = fy_start + (y_end - y_start)
+        fx_start = max(0, -shift_x); fx_end = fx_start + (x_end - x_start)
+        
+        target_view = combined_mask[z_start:z_end, y_start:y_end, x_start:x_end]
+        source_view = fiber_mask[fz_start:fz_end, fy_start:fy_end, fx_start:fx_end]
+        
+        if physics_mode == 'thermal':
+            target_view[(target_view >= 2) & source_view] = inter_id  
+            target_view[(target_view == 0) & source_view] = filler_id 
+        else:
+            target_view[source_view] = filler_id
+
+    all_pts = np.vstack(all_backbones)
+    cm_global_abs = np.mean(all_pts, axis=0)
+    cropped_mask, offset = crop_and_standardize(combined_mask > 0, cm_global_abs)
+    
+    local_kinematics = [(bb - cm_global_abs).tolist() for bb in all_backbones]
     
     geom_data = {
-        'base_type': 'flake', 'radius': radius, 'thickness': thickness,
-        'R_orig': R_orig.tolist(), 'local_kinematics': [[0.0, 0.0, 0.0]], 
+        'base_type': 'agglomerate', 'radius': radius,
+        'R_orig': np.eye(3).tolist(), 'local_kinematics': local_kinematics,
         'offset_center_to_cm': offset.tolist()
     }
     return cropped_mask, geom_data
@@ -256,94 +305,13 @@ def create_staggered_flakes_mask(radius=15, layer_thickness=2, min_layers=1, max
     }
     return cropped_mask, geom_data
 
-def get_staggered_flakes_mask(radius=15, layer_thickness=2, min_layers=1, max_layers=4, max_offset_pct=30, physics_mode='thermal'):
-    return create_staggered_flakes_mask(radius, layer_thickness, min_layers, max_layers, max_offset_pct)
-
-def create_fiber_mask(length, radius, max_bend_deg=90, max_total_bends=10):
-    """Generate a mask for a single flexible fiber and calculate true physical CM"""
-    box_size = int(length * 2 + radius * 2 + 5)
-    mask = np.zeros((box_size, box_size, box_size), dtype=bool)
-    
-    start_pos = np.array([box_size//2, box_size//2, box_size//2], dtype=float)
-    backbone = [np.round(start_pos).astype(int)]
-    current_pos = start_pos
-    vec = rng.standard_normal(3)
-    vec /= np.linalg.norm(vec)
-    bends_made = 0
-
-    for _ in range(int(length)):
-        next_pos_f = current_pos + vec
-        next_pos_i = np.round(next_pos_f).astype(int)
-        if any(p < radius or p >= box_size - radius for p in next_pos_i): break
-        if bends_made < max_total_bends and rng.random() < (max_total_bends / length):
-            angle_rad = np.radians(rng.uniform(10, max_bend_deg))
-            noise = rng.standard_normal(3)
-            noise -= noise.dot(vec) * vec
-            if np.linalg.norm(noise) > 0:
-                noise /= np.linalg.norm(noise)
-                new_vec = vec * np.cos(angle_rad) + noise * np.sin(angle_rad)
-                vec = new_vec / np.linalg.norm(new_vec)
-                bends_made += 1
-        current_pos = current_pos + vec
-        backbone.append(np.round(current_pos).astype(int))
-
-    for (bz, by, bx) in backbone:
-        mask[bz, by, bx] = True
-    rz, ry, rx = np.ogrid[-radius:radius+1, -radius:radius+1, -radius:radius+1]
-    brush = rx**2 + ry**2 + rz**2 <= radius**2
-    mask = binary_dilation(mask, structure=brush)
-
-    cm_global_abs = np.mean(backbone, axis=0)
-    cropped_mask, offset = crop_and_standardize(mask, cm_global_abs)
-    local_kinematics = np.array(backbone) - cm_global_abs
-    
-    geom_data = {
-        'base_type': 'fiber', 'radius': radius,
-        'R_orig': np.eye(3).tolist(), 'local_kinematics': local_kinematics.tolist(),
-        'offset_center_to_cm': offset.tolist()
-    }
-    return cropped_mask, geom_data
-
-def get_flexible_fiber_mask(length=90, radius=2, max_bend_deg=90, max_total_bends=10, physics_mode='thermal'):
-    return create_fiber_mask(length, radius, max_bend_deg, max_total_bends)
-
-def get_rigid_cylinder_mask(length, radius, physics_mode='thermal'):
-    """Rigid short fiber extracted as pure kinematics"""
-    box_size = int(length + radius * 2 + 5)
-    mask = np.zeros((box_size, box_size, box_size), dtype=bool)
-    vec = rng.standard_normal(3)
-    vec /= np.linalg.norm(vec)
-    start_pos = np.array([box_size//2, box_size//2, box_size//2], dtype=float) - vec * (length / 2)
-    
-    backbone = []
-    current_pos = start_pos
-    for _ in range(int(length)):
-        iz, iy, ix = np.round(current_pos).astype(int)
-        mask[iz, iy, ix] = True
-        backbone.append([current_pos[0], current_pos[1], current_pos[2]])
-        current_pos += vec
-        
-    rz, ry, rx = np.ogrid[-radius:radius+1, -radius:radius+1, -radius:radius+1]
-    brush = rx**2 + ry**2 + rz**2 <= radius**2
-    mask = binary_dilation(mask, structure=brush)
-    
-    cm_global_abs = np.mean(backbone, axis=0)
-    cropped_mask, offset = crop_and_standardize(mask, cm_global_abs)
-    local_kinematics = np.array(backbone) - cm_global_abs
-    
-    geom_data = {
-        'base_type': 'fiber', 'radius': radius,
-        'R_orig': np.eye(3).tolist(), 'local_kinematics': local_kinematics.tolist(),
-        'offset_center_to_cm': offset.tolist()
-    }
-    return cropped_mask, geom_data
-
 def _create_agglom_single_fiber_mask(length, radius, max_bend_deg, max_total_bends):
     box_size = int(length + radius * 2 + 5)
     mask = np.zeros((box_size, box_size, box_size), dtype=bool)
     center_pos = (box_size // 2, box_size // 2, box_size // 2)
     rz, ry, rx = np.ogrid[-radius:radius+1, -radius:radius+1, -radius:radius+1]
     brush = rx**2 + ry**2 + rz**2 <= radius**2
+    bz, by, bx = np.where(brush)
     straight_steps = int(max(3, length * 0.05))
     half_len_a = length // 2
     half_len_b = length - half_len_a
@@ -352,6 +320,7 @@ def _create_agglom_single_fiber_mask(length, radius, max_bend_deg, max_total_ben
     start_pos = center_pos
     
     def grow_path(steps, v_dir):
+        # ... (Keep existing grow_path logic exactly as is) ...
         path = []
         curr = np.array(start_pos, dtype=float)
         v = v_dir.copy()
@@ -379,50 +348,95 @@ def _create_agglom_single_fiber_mask(length, radius, max_bend_deg, max_total_ben
     backbone_a = grow_path(half_len_a, vec)
     backbone_b = grow_path(half_len_b, -vec)
     backbone = backbone_b[::-1] + [tuple(start_pos)] + backbone_a
+    
+    # Fast vectorized pasting
     for (z, y, x) in backbone:
-        mask[z, y, x] = True
-    mask = binary_dilation(mask, structure=brush)
+        gz, gy, gx = bz + z - radius, by + y - radius, bx + x - radius
+        mask[gz, gy, gx] = True
+        
     return mask, backbone
 
-def create_agglomerate_mask(num_fibers, length, radius, max_bend_deg=90, max_total_bends=10, physics_mode='thermal', filler_id=4, inter_id=3):
-    box_size = int(length + radius * 2 + 5)
-    combined_mask = np.zeros((box_size, box_size, box_size), dtype=np.uint8)
-    start_radius = radius * 2
-    all_backbones = []
+def get_sphere_mask(radius, physics_mode='thermal'):
+    """Perfect sphere filler standardized for kinematics"""
+    size = int(radius * 2 + 2)
+    z, y, x = np.indices((size, size, size))
+    cz, cy, cx = size//2, size//2, size//2
+    mask = (z - cz)**2 + (y - cy)**2 + (x - cx)**2 <= radius**2
     
-    for _ in range(num_fibers):
-        fiber_mask, fiber_bb = _create_agglom_single_fiber_mask(length, radius, max_bend_deg, max_total_bends)
-        offset = np.round(rng.standard_normal(3) * start_radius).astype(int)
-        shifted_bb = np.array(fiber_bb) + offset
-        all_backbones.append(shifted_bb)
-        shift_z, shift_y, shift_x = offset
-        
-        z_start, z_end = max(0, shift_z), min(box_size, box_size + shift_z)
-        y_start, y_end = max(0, shift_y), min(box_size, box_size + shift_y)
-        x_start, x_end = max(0, shift_x), min(box_size, box_size + shift_x)
-        
-        fz_start = max(0, -shift_z); fz_end = fz_start + (z_end - z_start)
-        fy_start = max(0, -shift_y); fy_end = fy_start + (y_end - y_start)
-        fx_start = max(0, -shift_x); fx_end = fx_start + (x_end - x_start)
-        
-        target_view = combined_mask[z_start:z_end, y_start:y_end, x_start:x_end]
-        source_view = fiber_mask[fz_start:fz_end, fy_start:fy_end, fx_start:fx_end]
-        
-        if physics_mode == 'thermal':
-            target_view[(target_view >= 2) & source_view] = inter_id  
-            target_view[(target_view == 0) & source_view] = filler_id 
-        else:
-            target_view[source_view] = filler_id
-
-    all_pts = np.vstack(all_backbones)
-    cm_global_abs = np.mean(all_pts, axis=0)
-    cropped_mask, offset = crop_and_standardize(combined_mask > 0, cm_global_abs)
-    
-    local_kinematics = [(bb - cm_global_abs).tolist() for bb in all_backbones]
+    cm_global_abs = np.array([cz, cy, cx], dtype=float)
+    cropped_mask, offset = crop_and_standardize(mask, cm_global_abs)
     
     geom_data = {
-        'base_type': 'agglomerate', 'radius': radius,
-        'R_orig': np.eye(3).tolist(), 'local_kinematics': local_kinematics,
+        'base_type': 'sphere', 'radius': radius,
+        'R_orig': np.eye(3).tolist(), 'local_kinematics': [[0.0, 0.0, 0.0]],
+        'offset_center_to_cm': offset.tolist()
+    }
+    return cropped_mask, geom_data
+
+def get_flake_mask(radius, thickness, physics_mode='thermal'):
+    """Flake-shaped filler with Polar Decomposition support"""
+    size = int(radius * 2 + 4)
+    angles = rng.random(3) * 2 * np.pi
+    az, ay, ax = angles
+    R_orig = np.array([[math.cos(az), -math.sin(az), 0], [math.sin(az), math.cos(az), 0], [0, 0, 1]]) @ \
+             np.array([[math.cos(ay), 0, math.sin(ay)], [0, 1, 0], [-math.sin(ay), 0, math.cos(ay)]]) @ \
+             np.array([[1, 0, 0], [0, math.cos(ax), -math.sin(ax)], [0, math.sin(ax), math.cos(ax)]])
+             
+    Z, Y, X = np.indices((size, size, size))
+    Z = Z - size//2; Y = Y - size//2; X = X - size//2
+    rot = R_orig @ np.stack([Z.ravel(), Y.ravel(), X.ravel()])
+    Zr, Yr, Xr = rot[0,:].reshape((size, size, size)), rot[1,:].reshape((size, size, size)), rot[2,:].reshape((size, size, size))
+    
+    mask = (Xr**2 + Yr**2 <= radius**2) & (np.abs(Zr) <= thickness/2)
+    cm_global_abs = np.array([size//2, size//2, size//2], dtype=float)
+    cropped_mask, offset = crop_and_standardize(mask, cm_global_abs)
+    
+    geom_data = {
+        'base_type': 'flake', 'radius': radius, 'thickness': thickness,
+        'R_orig': R_orig.tolist(), 'local_kinematics': [[0.0, 0.0, 0.0]], 
+        'offset_center_to_cm': offset.tolist()
+    }
+    return cropped_mask, geom_data
+
+def get_staggered_flakes_mask(radius=15, layer_thickness=2, min_layers=1, max_layers=4, max_offset_pct=30, physics_mode='thermal'):
+    return create_staggered_flakes_mask(radius, layer_thickness, min_layers, max_layers, max_offset_pct)
+
+def get_flexible_fiber_mask(length=90, radius=2, max_bend_deg=90, max_total_bends=10, physics_mode='thermal'):
+    return create_fiber_mask(length, radius, max_bend_deg, max_total_bends)
+
+def get_rigid_cylinder_mask(length, radius, physics_mode='thermal'):
+    """Rigid short fiber matching exact original geometry but accelerated without binary_dilation"""
+    box_size = int(length + radius * 2 + 5)
+    mask = np.zeros((box_size, box_size, box_size), dtype=bool)
+    vec = rng.standard_normal(3)
+    vec /= np.linalg.norm(vec)
+    start_pos = np.array([box_size//2, box_size//2, box_size//2], dtype=float) - vec * (length / 2)
+    
+    kinematic_backbone = []
+    backbone_idx = []
+    current_pos = start_pos
+    for _ in range(int(length)):
+        kinematic_backbone.append([current_pos[0], current_pos[1], current_pos[2]])
+        backbone_idx.append(np.round(current_pos).astype(int))
+        current_pos += vec
+        
+    # Create the spherical brush
+    rz, ry, rx = np.ogrid[-radius:radius+1, -radius:radius+1, -radius:radius+1]
+    brush = rx**2 + ry**2 + rz**2 <= radius**2
+    bz, by, bx = np.where(brush)
+    
+    # Fast vectorized pasting (Replaces single-threaded binary_dilation)
+    for (z, y, x) in backbone_idx:
+        gz, gy, gx = bz + z - radius, by + y - radius, bx + x - radius
+        mask[gz, gy, gx] = True
+    
+    cm_global_abs = np.mean(kinematic_backbone, axis=0)
+    cropped_mask, offset = crop_and_standardize(mask, cm_global_abs)
+    local_kinematics = np.array(kinematic_backbone) - cm_global_abs
+    
+    geom_data = {
+        'base_type': 'fiber', 'radius': radius,
+        'R_orig': np.eye(3).tolist(), 'local_kinematics': local_kinematics.tolist(),
         'offset_center_to_cm': offset.tolist()
     }
     return cropped_mask, geom_data
@@ -866,8 +880,9 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
                 stx = (shell_offsets[:, 2] + cx) % shape[2]
                 shell_count_grid[stz, sty, stx] += 1
             
-            # Reset cache and fails only on success
-            stamp_offsets = None 
+            # Reset cache and fails only on success (Keep cache if it's a sphere)
+            if current_geom_data.get('base_type') != 'sphere':
+                stamp_offsets = None 
             consecutive_fails = 0
             
             # Record successful placement geometry
