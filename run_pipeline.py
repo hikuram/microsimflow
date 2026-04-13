@@ -464,7 +464,17 @@ def main():
             if k == 'prop': 
                 opts[k] = v.replace('_', ' ')
             else: 
-                opts[k] = float(v) if '.' in v else int(v)
+                # Parse numeric values robustly, handling scientific notation (e.g., 1e-3)
+                try:
+                    val = float(v)
+                    # Convert to int only if it's a perfect integer without decimal or exponent notation
+                    if val.is_integer() and not any(c in v.lower() for c in ['.', 'e']):
+                        opts[k] = int(val)
+                    else:
+                        opts[k] = val
+                except ValueError:
+                    # Fallback to raw string if it's not a number
+                    opts[k] = v
 
         prop_map[current_filler_id] = opts.pop('prop', default_filler)
         protrusion_coef = opts.pop('protrusion_coef', 0.0025)
