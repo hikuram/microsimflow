@@ -35,28 +35,35 @@ from micro_builder import (
 )
 
 def parse_chfem_log(log_path):
-    """Extract tensor components and computation time (sum of X, Y, Z) from chfem log"""
-    kxx, kyy, kzz = None, None, None
+    """Extract up to 6 diagonal tensor components (General Txx-Txy notation) and computation time"""
+    # Initialize with empty strings for all 6 possible components (xx, yy, zz, yz, zx, xy)
+    diag = [""] * 6
     total_time = 0.0
     try:
+        if not os.path.exists(log_path):
+            return diag, 0.0
+            
         with open(log_path, 'r', encoding='utf-8') as f:
             content = f.read()
 
+        # Extract the homogenized constitutive matrix block
         mat_match = re.search(r'Homogenized Constitutive Matrix.*?:[^\n]*\n(.*?)\n-{10,}', content, re.DOTALL)
         if mat_match:
-            lines = [line.strip() for line in mat_match.group(1).strip().split('\n')]
-            kxx = float(lines[0].split()[0])
-            kyy = float(lines[1].split()[1])
-            kzz = float(lines[2].split()[2])
+            lines = [line.strip() for line in mat_match.group(1).strip().split('\n') if line.strip()]
+            # Extract diagonal elements dynamically based on matrix size (3x3 or 6x6)
+            for i in range(min(len(lines), 6)):
+                parts = lines[i].split()
+                if len(parts) > i:
+                    diag[i] = float(parts[i])
 
-        # Match 'Elapsed time:' or 'Elapsed time (total):' and sum them all up
+        # Sum up elapsed time matches
         time_matches = re.findall(r'Elapsed time(?: \(total\))?:\s*([\d\.eE\+\-]+)', content)
         if time_matches:
             total_time = sum(float(t) for t in time_matches)
     except Exception as e:
         print(f"chfem log parsing error: {e}")
 
-    return kxx, kyy, kzz, total_time
+    return diag, total_time
 
 def parse_nf_properties(nf_path):
     """Read and parse property map from an existing .nf file"""
@@ -99,13 +106,13 @@ def run_recalculation_mode(args):
     print(f"--- Recalculation Mode Started ---")
     print(f"Backup created at: {backup_path}")
 
-    # Fallback properties from command-line arguments
+    # Fallback properties from command-line arguments (used if .nf is missing or new IDs found)
     if args.physics_mode == 'thermal':
-        fallback_props = {0: args.prop_A or "0.3", 1: args.prop_B or "0.3", 2: args.prop_inter2 or "30.0", 3: args.prop_inter or "30.0", 4: "300.0"}
+        fallback_props = {0: "0.3", 1: "0.3", 2: "30.0", 3: "30.0", 4: "300.0"}
     elif args.physics_mode == 'electrical':
-        fallback_props = {0: args.prop_A or "1e-4", 1: args.prop_B or "1e-4", 2: args.prop_inter2 or "1e-3", 3: args.prop_inter or "1e-1", 4: "1e4"}
+        fallback_props = {0: "1e-4", 1: "1e-4", 2: "1e-3", 3: "1e-1", 4: "1e4"}
     else: # mechanics
-        fallback_props = {0: args.prop_A or "3.0 1.0", 1: args.prop_B or "3.0 1.0", 2: args.prop_inter2 or "10.0 3.0", 3: args.prop_inter or "15.0 5.0", 4: "100.0 50.0"}
+        fallback_props = {0: "3.0 1.0", 1: "3.0 1.0", 2: "10.0 3.0", 3: "15.0 5.0", 4: "100.0 50.0"}
 
     # Read all rows from the CSV
     with open(args.csv_log, 'r', encoding='utf-8') as f:
@@ -113,7 +120,7 @@ def run_recalculation_mode(args):
         header = next(reader)
         rows = list(reader)
 
-    # Get indices of required columns
+    # Required metadata columns for identifying files and grid dimensions
     try:
         idx_basename = header.index("Basename")
         idx_grid_size = header.index("Grid_Size")
@@ -125,7 +132,7 @@ def run_recalculation_mode(args):
 
     updated_rows = []
 
-    # 2. Force recalculation for all rows in the CSV
+    # 2. Iterate through each model in the CSV
     for row in rows:
         basename = row[idx_basename]
         grid_size_str = row[idx_grid_size]
@@ -142,62 +149,74 @@ def run_recalculation_mode(args):
             updated_rows.append(row)
             continue
 
-        # Parse Grid_Size assuming "X x Y x Z" format
+        # Restore grid to determine unique Phase IDs
         dim_parts = grid_size_str.split('x')
         nx, ny, nz = int(dim_parts[0]), int(dim_parts[1]), int(dim_parts[2])
-        
-        # Restore as 3D numpy array (Z, Y, X) from raw binary
         final_grid = np.fromfile(raw_file, dtype=np.uint8).reshape((nz, ny, nx))
 
-        # 3. Determine properties
+        # 3. Resolve Property Map (Task 5 Fix: Preserve heterogeneity)
         prop_map = parse_nf_properties(nf_file)
+        
         if args.overwrite_props or not prop_map:
-            print("  Overwriting properties from command-line arguments...")
-            # Overwrite based on actual IDs present in the grid
+            print("  Updating properties from command-line arguments...")
+            cli_overrides = {0: args.prop_A, 1: args.prop_B, 2: args.prop_inter2, 3: args.prop_inter}
             unique_ids = np.unique(final_grid)
+            
             for uid in unique_ids:
-                if uid in fallback_props:
-                    prop_map[uid] = fallback_props[uid]
-                elif uid >= 4: # Filler ID fallback
-                    prop_map[uid] = fallback_props[4] 
+                # Priority 1: User-specified CLI override
+                if uid in cli_overrides and cli_overrides[uid] is not None:
+                    prop_map[uid] = cli_overrides[uid]
+                # Priority 2: Keep existing .nf property if present (protects multiple filler IDs)
+                elif uid in prop_map:
+                    continue
+                # Priority 3: Hard fallback for missing data
+                else:
+                    if uid in fallback_props:
+                        prop_map[uid] = fallback_props[uid]
+                    elif uid >= 4:
+                        prop_map[uid] = fallback_props[4] 
 
-            # Re-export .nf for chfem with updated properties
+            # Re-export .nf for chfem with corrected properties
             export_chfem_inputs(final_grid, basename, voxel_size, mode, prop_map)
 
-        # 4. Execute solvers
-        chfem_time = chfem_kxx = chfem_kyy = chfem_kzz = ""
-        puma_time = puma_kxx = puma_kyy = puma_kzz = ""
+        # 4. Execute solvers and collect results (Task 4: Universal T-notation)
+        chfem_time = ""
+        chfem_results = [""] * 6
+        puma_time = ""
+        puma_results = [""] * 6
 
         if args.solver in ["chfem", "both"]:
             log_file = f"{basename}_metrics.txt"
             subprocess.run(["chfem_exec", nf_file, raw_file, "-m", log_file])
-            ckx, cky, ckz, ctime = parse_chfem_log(log_file)
-            if ckx is not None:
-                chfem_time, chfem_kxx, chfem_kyy, chfem_kzz = f"{ctime:.2f}", ckx, cky, ckz
+            res_diag, ctime = parse_chfem_log(log_file)
+            if res_diag[0] != "":
+                chfem_time, chfem_results = f"{ctime:.2f}", res_diag
 
         if args.solver in ["puma", "both"]:
-            # Note: Splitting string to handle tensor inputs in mechanics mode if necessary
             cond_map = {k: float(v.split()[0]) for k, v in prop_map.items()} 
             pkx, pky, pkz, ptime = run_puma_laplace(final_grid, voxel_size, mode, cond_map)
             if pkx is not None:
-                puma_time, puma_kxx, puma_kyy, puma_kzz = f"{ptime:.2f}", pkx, pky, pkz
+                puma_time = f"{ptime:.2f}"
+                puma_results = [pkx, pky, pkz, "", "", ""]
 
-        # Update respective columns in the row
+        # 5. Update the row with new metrics
         try:
             row[header.index("chfem_Time_s")] = chfem_time
-            row[header.index("chfem_Kxx")] = chfem_kxx
-            row[header.index("chfem_Kyy")] = chfem_kyy
-            row[header.index("chfem_Kzz")] = chfem_kzz
             row[header.index("puma_Time_s")] = puma_time
-            row[header.index("puma_Kxx")] = puma_kxx
-            row[header.index("puma_Kyy")] = puma_kyy
-            row[header.index("puma_Kzz")] = puma_kzz
+            
+            # Map results to universal Txx, Tyy, Tzz, Tyz, Tzx, Txy columns
+            comp_suffixes = ["xx", "yy", "zz", "yz", "zx", "xy"]
+            for i, suffix in enumerate(comp_suffixes):
+                col_c = f"chfem_T{suffix}"
+                col_p = f"puma_T{suffix}"
+                if col_c in header: row[header.index(col_c)] = chfem_results[i]
+                if col_p in header: row[header.index(col_p)] = puma_results[i]
         except ValueError:
-            pass # Ignore if columns do not exist in older CSV formats
+            pass 
             
         updated_rows.append(row)
 
-    # 5. Overwrite the CSV log file
+    # 6. Finalize the CSV log
     with open(args.csv_log, mode='w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         writer.writerow(header)
@@ -632,35 +651,55 @@ def main():
         save_thumbnail_png(final_grid, slice_filename, phase_labels)
 
         # 5. Execute computational solvers and aggregate results
-        chfem_time = chfem_kxx = chfem_kyy = chfem_kzz = ""
-        puma_time = puma_kxx = puma_kyy = puma_kzz = ""
+        chfem_time = ""
+        chfem_results = [""] * 6
+        puma_time = ""
+        puma_results = [""] * 6
+
         export_chfem_inputs(final_grid, current_basename, voxel_size=args.voxel_size, physics_mode=args.physics_mode, prop_map=prop_map)
         
         if args.solver in ["chfem", "both"]:
             log_file = f"{current_basename}_metrics.txt"
             subprocess.run(["chfem_exec", f"{current_basename}.nf", f"{current_basename}.raw", "-m", log_file])
-            ckx, cky, ckz, ctime = parse_chfem_log(log_file)
-            if ckx is not None:
-                chfem_time, chfem_kxx, chfem_kyy, chfem_kzz = f"{ctime:.2f}", ckx, cky, ckz
+            res_diag, ctime = parse_chfem_log(log_file)
+            if res_diag[0] != "":
+                chfem_time, chfem_results = f"{ctime:.2f}", res_diag
 
         if args.solver in ["puma", "both"]:
             cond_map = {k: float(v) for k, v in prop_map.items()}
             pkx, pky, pkz, ptime = run_puma_laplace(final_grid, args.voxel_size, args.physics_mode, cond_map)
             if pkx is not None:
-                puma_time, puma_kxx, puma_kyy, puma_kzz = f"{ptime:.2f}", pkx, pky, pkz
+                puma_time = f"{ptime:.2f}"
+                # PuMA (Laplace) only provides 3 diagonal components
+                puma_results = [pkx, pky, pkz, "", "", ""]
 
         file_exists = os.path.isfile(args.csv_log)
         with open(args.csv_log, mode='a', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             if not file_exists:
+                # Header with universal T-notation
                 writer.writerow([
                     "Basename", "Grid_Size", "Voxel_Size_m", "BG_Type", "Mode", "Solver", "Recipe", 
                     "Stretch_Ratio", "Poisson_Ratio",
                     "PolymerA_Frac", "PolymerB_Frac", "Secondary_Inter_Frac", "Primary_Inter_Frac", "Filler_Frac", "Placement_Logs", 
                     "Slice_Image",
-                    "chfem_Time_s", "chfem_Kxx", "chfem_Kyy", "chfem_Kzz",
-                    "puma_Time_s", "puma_Kxx", "puma_Kyy", "puma_Kzz"
+                    "chfem_Time_s", "chfem_Txx", "chfem_Tyy", "chfem_Tzz", "chfem_Tyz", "chfem_Tzx", "chfem_Txy",
+                    "puma_Time_s", "puma_Txx", "puma_Tyy", "puma_Tzz", "puma_Tyz", "puma_Tzx", "puma_Txy"
                 ])
+                
+            writer.writerow([
+                current_basename, f"{final_grid.shape[2]}x{final_grid.shape[1]}x{final_grid.shape[0]}", args.voxel_size, args.bg_type, args.physics_mode, args.solver, " ".join(args.recipe),
+                stretch, args.poisson_ratio if stretch != 1.0 else "N/A",
+                f"{phase_stats['polymer_a_fraction']:.4f}",
+                f"{phase_stats['polymer_b_fraction']:.4f}",
+                f"{phase_stats['secondary_interface_fraction']:.4f}", 
+                f"{phase_stats['primary_interface_fraction']:.4f}", 
+                f"{phase_stats['filler_total_fraction']:.4f}",
+                " | ".join(current_step_logs),
+                slice_filename,
+                chfem_time, *chfem_results,
+                puma_time, *puma_results
+            ])
                 
             writer.writerow([
                 current_basename, f"{final_grid.shape[2]}x{final_grid.shape[1]}x{final_grid.shape[0]}", args.voxel_size, args.bg_type, args.physics_mode, args.solver, " ".join(args.recipe),
