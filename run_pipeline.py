@@ -270,25 +270,19 @@ def run_puma_laplace(final_grid, voxel_size, physics_mode, cond_map):
         print(f"PuMA encountered an error during computation: {e}")
         return None, None, None, 0.0
 
-def save_thumbnail_png(grid, filename, phase_labels=None):
+def save_thumbnail_png(grid, filename):
     """
-    Save the Z-axis center slice as a pure, margin-less PNG for lightweight storage and montage assembly.
-    Colorbars and axes are completely removed to reduce file size.
-    
-    phase_labels: Phase definitions in dictionary format {ID: 'Label'}
+    Save the Z-axis center slice as a PNG.
+    Capping values at 4 ensures that Filler 2 (ID 5) and beyond 
+    are colored identically to Filler 1 (ID 4).
     """
-    if phase_labels is None:
-        phase_labels = {0: 'Polymer A', 1: 'Polymer B', 2: 'Secondary Inter', 3: 'Primary Inter', 4: 'Filler'}
-        
-    # Calculate dynamic settings to maintain consistent colors across all images
-    ids = list(phase_labels.keys())
-    num_phases = len(ids)
-    vmin = min(ids) - 0.5
-    vmax = max(ids) + 0.5
+    num_phases = 5
+    vmin, vmax = -0.5, 4.5
     custom_cmap = plt.get_cmap('viridis', num_phases)
 
     z_mid = grid.shape[0] // 2
-    slice_img = grid[z_mid, :, :]
+    # Clip all filler IDs (4, 5, 6...) to 4 for consistent visualization
+    slice_img = np.clip(grid[z_mid, :, :], 0, 4)
     
     # Save the pure 2D array directly to a PNG file without any Matplotlib figure overhead
     plt.imsave(filename, slice_img, cmap=custom_cmap, vmin=vmin, vmax=vmax, origin='upper')
@@ -337,10 +331,10 @@ def update_pvd_file(pvd_filepath, dataset_records):
         f.write('  </Collection>\n')
         f.write('</VTKFile>\n')
 
-def export_common_legend(phase_labels, filename="common_legend.png"):
+def export_common_legend(filename="common_legend.png"):
     """
-    Exports a standalone legend image to be shared across all montages.
-    Skips generation if the file already exists to save time.
+    Exports a standalone legend image with fixed 5 phases.
+    Moving this outside the loop ensures consistency across all experiments.
     """
     if os.path.exists(filename):
         return
@@ -352,16 +346,16 @@ def export_common_legend(phase_labels, filename="common_legend.png"):
         'savefig.bbox': 'tight'
     })
 
-    ids = list(phase_labels.keys())
-    labels = list(phase_labels.values())
-    num_phases = len(ids)
+    # Standardized 5 phases
+    ids = [0, 1, 2, 3, 4]
+    labels = ['Polymer A', 'Polymer B', 'Secondary Inter', 'Primary Inter', 'Filler']
+    num_phases = 5
     
-    vmin = min(ids) - 0.5
-    vmax = max(ids) + 0.5
+    vmin, vmax = -0.5, 4.5
     custom_cmap = plt.get_cmap('viridis', num_phases)
 
     fig, ax = plt.subplots(figsize=(1.5, 4)) 
-    ax.axis('off') # Hide the dummy axes
+    ax.axis('off')
     
     # Create a dummy ScalarMappable for the colorbar
     sm = plt.cm.ScalarMappable(cmap=custom_cmap, norm=plt.Normalize(vmin=vmin, vmax=vmax))
@@ -421,6 +415,10 @@ def main():
     # --- Fix the generator if a seed is specified ---
     if args.seed is not None:
         set_random_seed(args.seed)
+        
+    # --- Pre-computation Setup ---
+    # Generate the common legend once before entering any loops
+    export_common_legend()
     
     # Set default physical properties according to the physics mode
     if args.physics_mode == 'thermal':
@@ -639,13 +637,6 @@ def main():
             final_grid, secondary_inter_id=secondary_inter_id, primary_inter_id=primary_inter_id, filler_start_id=filler_start_id
         )
         
-        phase_labels = {0: 'Polymer A', 1: 'Polymer B', secondary_inter_id: 'Secondary Inter', primary_inter_id: 'Primary Inter'}
-        for i in range(filler_start_id, current_filler_id):
-            phase_labels[i] = f'Filler {i-filler_start_id+1}' if current_filler_id > filler_start_id + 1 else 'Filler'
-        
-        # Export the common legend once
-        export_common_legend(phase_labels)
-        
         metadata = {
             "Basename": current_basename,
             "Grid_Size": f"{final_grid.shape[2]}x{final_grid.shape[1]}x{final_grid.shape[0]}",
@@ -685,7 +676,7 @@ def main():
         print(f"Generated VTM wrapper and updated PVD collection in: {pvd_filename}")
 
         slice_filename = f"{current_basename}_slice.png"
-        save_thumbnail_png(final_grid, slice_filename, phase_labels)
+        save_thumbnail_png(final_grid, slice_filename)
 
         # 5. Execute computational solvers and aggregate results
         chfem_time = ""
