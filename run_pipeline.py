@@ -251,20 +251,20 @@ def run_puma_laplace(final_grid, voxel_size, physics_mode, cond_map):
         # Compute for each XYZ direction (specify periodic boundary conditions with side_bc='p')
         print("Computing X direction...")
         res_x = puma.compute_thermal_conductivity(ws, puma_cond_map, direction='x', side_bc='p', solver_type='cg')
-        kxx = res_x[0] if isinstance(res_x, tuple) else res_x
+        txx = res_x[0] if isinstance(res_x, tuple) else res_x
         
         print("Computing Y direction...")
         res_y = puma.compute_thermal_conductivity(ws, puma_cond_map, direction='y', side_bc='p', solver_type='cg')
-        kyy = res_y[0] if isinstance(res_y, tuple) else res_y
+        tyy = res_y[0] if isinstance(res_y, tuple) else res_y
         
         print("Computing Z direction...")
         res_z = puma.compute_thermal_conductivity(ws, puma_cond_map, direction='z', side_bc='p', solver_type='cg')
-        kzz = res_z[0] if isinstance(res_z, tuple) else res_z
+        tzz = res_z[0] if isinstance(res_z, tuple) else res_z
         
         total_time = time.time() - t0
         print(f"PuMA computation completed in {total_time:.2f}s")
         
-        return kxx, kyy, kzz, total_time
+        return txx, tyy, tzz, total_time
 
     except Exception as e:
         print(f"PuMA encountered an error during computation: {e}")
@@ -701,19 +701,6 @@ def main():
                 puma_time, *puma_results
             ])
                 
-            writer.writerow([
-                current_basename, f"{final_grid.shape[2]}x{final_grid.shape[1]}x{final_grid.shape[0]}", args.voxel_size, args.bg_type, args.physics_mode, args.solver, " ".join(args.recipe),
-                stretch, args.poisson_ratio if stretch != 1.0 else "N/A",
-                f"{phase_stats['polymer_a_fraction']:.4f}",
-                f"{phase_stats['polymer_b_fraction']:.4f}",
-                f"{phase_stats['secondary_interface_fraction']:.4f}", 
-                f"{phase_stats['primary_interface_fraction']:.4f}", 
-                f"{phase_stats['filler_total_fraction']:.4f}",
-                " | ".join(current_step_logs),
-                slice_filename,
-                chfem_time, chfem_kxx, chfem_kyy, chfem_kzz,
-                puma_time, puma_kxx, puma_kyy, puma_kzz
-            ])
 
 if __name__ == "__main__":
     main()
