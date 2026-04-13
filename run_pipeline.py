@@ -663,17 +663,23 @@ def main():
             "Poisson_Ratio": str(args.poisson_ratio) if stretch != 1.0 else "N/A",
         }
         
-        # Export VTI for visualization (in the current directory)
+        # Export VTI for visualization (in the specified directory)
         vti_filename = f"{current_basename}.vti"
         export_visualization_vti(final_grid, vti_filename, voxel_size=args.voxel_size, metadata=metadata)
         
-        # --- Create VTM wrapper and update PVD in the 'pvd/' subdirectory ---
-        pvd_dir = "pvd"
-        vtm_filename = os.path.join(pvd_dir, f"{current_basename}.vtm")
+        # --- Create VTM wrapper and update PVD in the 'vtm/' subdirectory ---
+        # Extract the directory path from current_basename
+        base_dir = os.path.dirname(current_basename)
+        file_stem = os.path.basename(current_basename)
+        base_stem = os.path.basename(args.basename)
+        
+        # Determine the target vtm directory (one level below the VTI file)
+        wrapper_dir = os.path.join(base_dir, "vtm") if base_dir else "vtm"
+        vtm_filename = os.path.join(wrapper_dir, f"{file_stem}.vtm")
         export_vtm_wrapper(vti_filename, vtm_filename)
         
         # Use the stretch ratio as the timestep value
-        pvd_filename = os.path.join(pvd_dir, f"{args.basename}.pvd")
+        pvd_filename = os.path.join(wrapper_dir, f"{base_stem}.pvd")
         pvd_records.append((stretch, vtm_filename))
         update_pvd_file(pvd_filename, pvd_records)
         print(f"Generated VTM wrapper and updated PVD collection in: {pvd_filename}")
