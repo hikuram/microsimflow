@@ -150,12 +150,12 @@ def plot_exp5_morphology():
     print("\n--- Plotting Stiffness Comparison ---")
     
     # Verify solver columns exist
-    if not all(col in df.columns for col in ['chfem_Kxx', 'chfem_Kyy', 'chfem_Kzz']):
-        print("Warning: Solver results (chfem_Kxx, etc.) are missing. Plotting skipped.")
+    if not all(col in df.columns for col in ['chfem_Txx', 'chfem_Tyy', 'chfem_Tzz']):
+        print("Warning: Solver results (chfem_Txx, etc.) are missing. Plotting skipped.")
         return
         
     # Group by background type and volume fraction
-    grouped = df.dropna(subset=['chfem_Kxx', 'chfem_Kyy', 'chfem_Kzz']).groupby(['BG_Type', 'Vf_A'])[['chfem_Kxx', 'chfem_Kyy', 'chfem_Kzz']].mean().reset_index()
+    grouped = df.dropna(subset=['chfem_Txx', 'chfem_Tyy', 'chfem_Tzz']).groupby(['BG_Type', 'Vf_A'])[['chfem_Txx', 'chfem_Tyy', 'chfem_Tzz']].mean().reset_index()
     
     # Theoretical Limits (Rule of Mixtures)
     E_a, E_b = 10.0, 1000.0
@@ -168,9 +168,9 @@ def plot_exp5_morphology():
 
     # Setup 1x3 subplots for X, Y, Z directions
     fig, axes = plt.subplots(1, 3, figsize=(18, 5), sharey=True)
-    directions = [('chfem_Kxx', 'X-Direction'),
-                  ('chfem_Kyy', 'Y-Direction'),
-                  ('chfem_Kzz', 'Z-Direction')]
+    directions = [('chfem_Txx', 'X-Direction'),
+                  ('chfem_Tyy', 'Y-Direction'),
+                  ('chfem_Tzz', 'Z-Direction')]
                   
     markers = {'lamellar': 's', 'cylinder': '^', 'gyroid': 'o', 'sea_island': 'D'}
 
