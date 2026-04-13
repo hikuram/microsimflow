@@ -581,7 +581,7 @@ def grow_adaptive_fiber(tpms_grid, comp_grid, start_pos, length, overlap_mode,
         
     return backbone
     
-def apply_brush_and_write(comp_grid, backbone, radius, physics_mode='thermal', shell_count_grid=None, filler_id=4, inter_id=3):
+def apply_brush_and_write(comp_grid, backbone, radius, physics_mode='thermal', shell_count_grid=None, filler_id=4, inter_id=3, tunnel_radius=2):
     shape = comp_grid.shape
     size = int(radius * 2 + 2)
     z, y, x = np.indices((size, size, size))
@@ -639,7 +639,7 @@ def apply_brush_and_write(comp_grid, backbone, radius, physics_mode='thermal', s
 def place_adaptive_fibers(comp_grid, tpms_grid, target_vol_frac, length, radius,
                           max_bend_deg=45, max_total_bends=10, max_retries_per_step=10, max_protrusion_ratio=0.1,
                           min_backbone_ratio=0.9, max_attempts=1000000, desc="", log_file=None,
-                          physics_mode='thermal', shell_count_grid=None, filler_id=4, inter_id=3):
+                          physics_mode='thermal', shell_count_grid=None, filler_id=4, inter_id=3, tunnel_radius=2):
     shape = comp_grid.shape
     target_voxels = int(np.prod(shape) * target_vol_frac)
     valid_z, valid_y, valid_x = np.where(tpms_grid == 0)
@@ -677,7 +677,7 @@ def place_adaptive_fibers(comp_grid, tpms_grid, target_vol_frac, length, radius,
                 continue
 
             consecutive_fails = 0
-            apply_brush_and_write(comp_grid, backbone, radius, physics_mode, shell_count_grid, filler_id, inter_id)
+            consecutive_fails = 0apply_brush_and_write(comp_grid, backbone, radius, physics_mode, shell_count_grid, filler_id, inter_id, tunnel_radius)
 
             current_total = np.sum(comp_grid >= 2)
             added_voxels = current_total - placed_voxels
