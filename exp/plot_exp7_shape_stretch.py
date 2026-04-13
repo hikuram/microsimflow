@@ -158,12 +158,12 @@ def main():
     df['Shape'] = df['Recipe'].apply(extract_shape_from_recipe)
     
     # Filter valid rows with simulation results
-    df_clean = df.dropna(subset=['Stretch_Ratio', 'chfem_Kxx']).copy()
+    df_clean = df.dropna(subset=['Stretch_Ratio', 'chfem_Txx']).copy()
 
     # Calculate Relative Conductivity (K / K_0)
-    df_clean['Kxx_rel'] = np.nan
-    df_clean['Kyy_rel'] = np.nan
-    df_clean['Kzz_rel'] = np.nan
+    df_clean['Txx_rel'] = np.nan
+    df_clean['Tyy_rel'] = np.nan
+    df_clean['Tzz_rel'] = np.nan
 
     groups = df_clean.groupby(['Shape', df_clean['Basename'].str.extract(r'(seed\d+)', expand=False)])
     
@@ -171,20 +171,20 @@ def main():
         baseline = group[group['Stretch_Ratio'] == 1.0]
         if baseline.empty: continue
             
-        kxx_0 = baseline['chfem_Kxx'].values[0]
-        kyy_0 = baseline['chfem_Kyy'].values[0]
-        kzz_0 = baseline['chfem_Kzz'].values[0]
+        kxx_0 = baseline['chfem_Txx'].values[0]
+        kyy_0 = baseline['chfem_Tyy'].values[0]
+        kzz_0 = baseline['chfem_Tzz'].values[0]
         
-        df_clean.loc[group.index, 'Kxx_rel'] = group['chfem_Kxx'] / kxx_0
-        df_clean.loc[group.index, 'Kyy_rel'] = group['chfem_Kyy'] / kyy_0
-        df_clean.loc[group.index, 'Kzz_rel'] = group['chfem_Kzz'] / kzz_0
+        df_clean.loc[group.index, 'Txx_rel'] = group['chfem_Txx'] / kxx_0
+        df_clean.loc[group.index, 'Tyy_rel'] = group['chfem_Tyy'] / kyy_0
+        df_clean.loc[group.index, 'Tzz_rel'] = group['chfem_Tzz'] / kzz_0
 
     # --- Plotting Part ---
     
-    # 1. Absolute Kxx Plot
+    # 1. Absolute Txx Plot
     plt.figure(figsize=(8, 6))
     sns.lineplot(
-        data=df_clean, x='Stretch_Ratio', y='chfem_Kxx', hue='Shape', style='Shape',
+        data=df_clean, x='Stretch_Ratio', y='chfem_Txx', hue='Shape', style='Shape',
         markers=True, dashes=False, linewidth=2.5, markersize=9, palette="colorblind"
     )
     plt.title('Absolute Conductivity ($K_{xx}$) vs. Stretch Ratio', fontsize=15, fontweight='bold', pad=15)
@@ -192,14 +192,14 @@ def main():
     plt.ylabel(r'Conductivity ($K_{xx}$)')
     plt.yscale('log')
     plt.grid(True, which="both", ls="--", alpha=0.5)
-    plt.savefig("exp7_absolute_Kxx.png", dpi=300, bbox_inches='tight')
+    plt.savefig("exp7_absolute_Txx.png", dpi=300, bbox_inches='tight')
     plt.close()
 
     # 2. Relative K Plots (X, Y, Z directions)
     directions = [
-        ('X-direction (Stretch Axis)', 'Kxx_rel'),
-        ('Y-direction (Transverse)', 'Kyy_rel'),
-        ('Z-direction (Transverse)', 'Kzz_rel')
+        ('X-direction (Stretch Axis)', 'Txx_rel'),
+        ('Y-direction (Transverse)', 'Tyy_rel'),
+        ('Z-direction (Transverse)', 'Tzz_rel')
     ]
     
     fig, axes = plt.subplots(1, 3, figsize=(16, 5), sharey=True)
