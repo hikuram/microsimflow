@@ -166,8 +166,8 @@ def main():
     print("\n--- Plotting Percolation Curves ---")
     
     # Calculate Macroscopic electrical conductivity
-    if all(col in df.columns for col in ['chfem_Kxx', 'chfem_Kyy', 'chfem_Kzz']):
-        df['K_eff'] = (df['chfem_Kxx'] + df['chfem_Kyy'] + df['chfem_Kzz']) / 3.0
+    if all(col in df.columns for col in ['chfem_Txx', 'chfem_Tyy', 'chfem_Tzz']):
+        df['K_eff'] = (df['chfem_Txx'] + df['chfem_Tyy'] + df['chfem_Tzz']) / 3.0
     else:
         print("Warning: chfem results are missing. Plotting will be skipped.")
         return
