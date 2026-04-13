@@ -184,9 +184,9 @@ def plot_scale_check():
     print("\n--- Plotting Performance and Physics Metrics ---")
     
     # Check if conductivity solver results are available
-    has_chfem = all(col in df.columns for col in ['chfem_Kxx', 'chfem_Kyy', 'chfem_Kzz'])
+    has_chfem = all(col in df.columns for col in ['chfem_Txx', 'chfem_Tyy', 'chfem_Tzz'])
     if has_chfem:
-        df['Avg_Conductivity'] = df[['chfem_Kxx', 'chfem_Kyy', 'chfem_Kzz']].mean(axis=1)
+        df['Avg_Conductivity'] = df[['chfem_Txx', 'chfem_Tyy', 'chfem_Tzz']].mean(axis=1)
     else:
         df['Avg_Conductivity'] = np.nan
 
