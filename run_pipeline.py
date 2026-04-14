@@ -114,8 +114,7 @@ def run_recalculation_mode(args):
     else: # mechanics
         fallback_props = {0: "3.0 1.0", 1: "3.0 1.0", 2: "10.0 3.0", 3: "15.0 5.0", 4: "100.0 50.0"}
 
-    # Read all rows from the CSV
-    with open(args.csv_log, 'r', encoding='utf-8') as f:
+    with open(backup_path, 'r', encoding='utf-8') as f:
         reader = csv.reader(f)
         header = next(reader)
         rows = list(reader)
@@ -130,98 +129,98 @@ def run_recalculation_mode(args):
         print(f"Error: CSV is missing required columns ({e})")
         return
 
-    updated_rows = []
+    with open(args.csv_log, mode='w', newline='', encoding='utf-8') as out_f:
+        writer = csv.writer(out_f)
+        writer.writerow(header) # Write header first
 
-    # 2. Iterate through each model in the CSV
-    for row in rows:
-        basename = row[idx_basename]
-        grid_size_str = row[idx_grid_size]
-        voxel_size = float(row[idx_voxel_size])
-        mode = row[idx_mode]
+        # 2. Iterate through each model in the CSV
+        for row in rows:
+            basename = row[idx_basename]
+            grid_size_str = row[idx_grid_size]
+            voxel_size = float(row[idx_voxel_size])
+            mode = row[idx_mode]
 
-        print(f"\nRecalculating: {basename}")
-        
-        raw_file = f"{basename}.raw"
-        nf_file = f"{basename}.nf"
-
-        if not os.path.exists(raw_file):
-            print(f"  Skipping: {raw_file} not found.")
-            updated_rows.append(row)
-            continue
-
-        # Restore grid to determine unique Phase IDs
-        dim_parts = grid_size_str.split('x')
-        nx, ny, nz = int(dim_parts[0]), int(dim_parts[1]), int(dim_parts[2])
-        final_grid = np.fromfile(raw_file, dtype=np.uint8).reshape((nz, ny, nx))
-
-        # 3. Resolve Property Map (Task 5 Fix: Preserve heterogeneity)
-        prop_map = parse_nf_properties(nf_file)
-        
-        if args.overwrite_props or not prop_map:
-            print("  Updating properties from command-line arguments...")
-            cli_overrides = {0: args.prop_A, 1: args.prop_B, 2: args.prop_inter2, 3: args.prop_inter}
-            unique_ids = np.unique(final_grid)
+            print(f"\nRecalculating: {basename}")
             
-            for uid in unique_ids:
-                # Priority 1: User-specified CLI override
-                if uid in cli_overrides and cli_overrides[uid] is not None:
-                    prop_map[uid] = cli_overrides[uid]
-                # Priority 2: Keep existing .nf property if present (protects multiple filler IDs)
-                elif uid in prop_map:
-                    continue
-                # Priority 3: Hard fallback for missing data
-                else:
-                    if uid in fallback_props:
-                        prop_map[uid] = fallback_props[uid]
-                    elif uid >= 4:
-                        prop_map[uid] = fallback_props[4] 
+            raw_file = f"{basename}.raw"
+            nf_file = f"{basename}.nf"
 
-            # Re-export .nf for chfem with corrected properties
-            export_chfem_inputs(final_grid, basename, voxel_size, mode, prop_map)
+            if not os.path.exists(raw_file):
+                print(f"  Skipping: {raw_file} not found.")
+                writer.writerow(row)
+                out_f.flush()
+                os.fsync(out_f.fileno())
+                continue
 
-        # 4. Execute solvers and collect results (Task 4: Universal T-notation)
-        chfem_time = ""
-        chfem_results = [""] * 6
-        puma_time = ""
-        puma_results = [""] * 6
+            # Restore grid to determine unique Phase IDs
+            dim_parts = grid_size_str.split('x')
+            nx, ny, nz = int(dim_parts[0]), int(dim_parts[1]), int(dim_parts[2])
+            final_grid = np.fromfile(raw_file, dtype=np.uint8).reshape((nz, ny, nx))
 
-        if args.solver in ["chfem", "both"]:
-            log_file = f"{basename}_metrics.txt"
-            subprocess.run(["chfem_exec", nf_file, raw_file, "-m", log_file])
-            res_diag, ctime = parse_chfem_log(log_file)
-            if res_diag[0] != "":
-                chfem_time, chfem_results = f"{ctime:.2f}", res_diag
-
-        if args.solver in ["puma", "both"]:
-            cond_map = {k: float(v.split()[0]) for k, v in prop_map.items()} 
-            pkx, pky, pkz, ptime = run_puma_laplace(final_grid, voxel_size, mode, cond_map)
-            if pkx is not None:
-                puma_time = f"{ptime:.2f}"
-                puma_results = [pkx, pky, pkz, "", "", ""]
-
-        # 5. Update the row with new metrics
-        try:
-            row[header.index("chfem_Time_s")] = chfem_time
-            row[header.index("puma_Time_s")] = puma_time
+            # 3. Resolve Property Map (Task 5 Fix: Preserve heterogeneity)
+            prop_map = parse_nf_properties(nf_file)
             
-            # Map results to universal Txx, Tyy, Tzz, Tyz, Tzx, Txy columns
-            comp_suffixes = ["xx", "yy", "zz", "yz", "zx", "xy"]
-            for i, suffix in enumerate(comp_suffixes):
-                col_c = f"chfem_T{suffix}"
-                col_p = f"puma_T{suffix}"
-                if col_c in header: row[header.index(col_c)] = chfem_results[i]
-                if col_p in header: row[header.index(col_p)] = puma_results[i]
-        except ValueError:
-            pass 
-            
-        updated_rows.append(row)
+            if args.overwrite_props or not prop_map:
+                print("  Updating properties from command-line arguments...")
+                cli_overrides = {0: args.prop_A, 1: args.prop_B, 2: args.prop_inter2, 3: args.prop_inter}
+                unique_ids = np.unique(final_grid)
+                
+                for uid in unique_ids:
+                    # Priority 1: User-specified CLI override
+                    if uid in cli_overrides and cli_overrides[uid] is not None:
+                        prop_map[uid] = cli_overrides[uid]
+                    # Priority 2: Keep existing .nf property if present (protects multiple filler IDs)
+                    elif uid in prop_map:
+                        continue
+                    # Priority 3: Hard fallback for missing data
+                    else:
+                        if uid in fallback_props:
+                            prop_map[uid] = fallback_props[uid]
+                        elif uid >= 4:
+                            prop_map[uid] = fallback_props[4] 
 
-    # 6. Finalize the CSV log
-    with open(args.csv_log, mode='w', newline='', encoding='utf-8') as f:
-        writer = csv.writer(f)
-        writer.writerow(header)
-        writer.writerows(updated_rows)
-        
+                # Re-export .nf for chfem with corrected properties
+                export_chfem_inputs(final_grid, basename, voxel_size, mode, prop_map)
+
+            # 4. Execute solvers and collect results (Task 4: Universal T-notation)
+            chfem_time = ""
+            chfem_results = [""] * 6
+            puma_time = ""
+            puma_results = [""] * 6
+
+            if args.solver in ["chfem", "both"]:
+                log_file = f"{basename}_metrics.txt"
+                subprocess.run(["chfem_exec", nf_file, raw_file, "-m", log_file])
+                res_diag, ctime = parse_chfem_log(log_file)
+                if res_diag[0] != "":
+                    chfem_time, chfem_results = f"{ctime:.2f}", res_diag
+
+            if args.solver in ["puma", "both"]:
+                cond_map = {k: float(v.split()[0]) for k, v in prop_map.items()} 
+                pkx, pky, pkz, ptime = run_puma_laplace(final_grid, voxel_size, mode, cond_map)
+                if pkx is not None:
+                    puma_time = f"{ptime:.2f}"
+                    puma_results = [pkx, pky, pkz, "", "", ""]
+
+            # 5. Update the row with new metrics
+            try:
+                row[header.index("chfem_Time_s")] = chfem_time
+                row[header.index("puma_Time_s")] = puma_time
+                
+                # Map results to universal Txx, Tyy, Tzz, Tyz, Tzx, Txy columns
+                comp_suffixes = ["xx", "yy", "zz", "yz", "zx", "xy"]
+                for i, suffix in enumerate(comp_suffixes):
+                    col_c = f"chfem_T{suffix}"
+                    col_p = f"puma_T{suffix}"
+                    if col_c in header: row[header.index(col_c)] = chfem_results[i]
+                    if col_p in header: row[header.index(col_p)] = puma_results[i]
+            except ValueError:
+                pass 
+                
+            writer.writerow(row)
+            out_f.flush()
+            os.fsync(out_f.fileno())
+
     print(f"\n--- Recalculation Complete. Saved to {args.csv_log} ---")
 
 def run_puma_laplace(final_grid, voxel_size, physics_mode, cond_map):
