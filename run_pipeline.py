@@ -369,38 +369,57 @@ def export_common_legend(filename="common_legend.png"):
     print(f"Saved common legend: {filename}")
 
 def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--size", type=int, default=200)
-    parser.add_argument("--voxel_size", type=float, default=1e-8)
+    parser = argparse.ArgumentParser(
+        description="microsimflow: A workflow for 3D microstructure generation and property homogenization.",
+        formatter_class=argparse.RawTextHelpFormatter
+    )
+    parser.add_argument("--size", type=int, default=200, help="Grid size for the 3D microstructure (default: 200).")
+    parser.add_argument("--voxel_size", type=float, default=1e-8, help="Physical size of one voxel in meters (default: 1e-8).")
     parser.add_argument("--bg_type", type=str, default="gyroid",
-                        choices=["single", "gyroid", "sea_island", "island_sea", "lamellar", "cylinder", "bcc"])
-    parser.add_argument("--phaseA_ratio", type=float, default=0.57)
+                        choices=["single", "gyroid", "sea_island", "island_sea", "lamellar", "cylinder", "bcc"],
+                        help="Type of continuous polymer background phase (default: gyroid).")
+    parser.add_argument("--phaseA_ratio", type=float, default=0.57, help="Target volume fraction for Phase A in the background (default: 0.57).")
 
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--recipe", nargs='+', help="Recipe for filler placement (required for new build)")
-    group.add_argument("--recalc", action="store_true", help="Launch in recalculation mode (skip model generation)")
     
-    parser.add_argument("--basename", type=str, default="model")
-    parser.add_argument("--csv_log", type=str, default="comparison_results.csv")
+    recipe_help = """Recipe for filler placement (required for new build).
+Format: type:volume_fraction:param1=val1:param2=val2...
+Available types and common parameters:
+  - flake        : radius, thickness
+  - sphere       : radius
+  - rigidfiber   : length, radius
+  - adaptfiber   : length, radius, max_bend_deg, max_total_bends, max_protrusion_ratio
+  - flexfiber    : length, radius, max_bend_deg, max_total_bends
+  - agglomerate  : num_fibers, length, radius, max_bend_deg, max_total_bends
+  - staggered    : radius, layer_thickness, min_layers, max_layers, max_offset_pct
+Optional param: 'prop=X' to override the physical property for this specific filler.
+Example: --recipe "rigidfiber:0.05:length=60:radius=2:prop=500.0" "flake:0.02:radius=15:thickness=2"
+"""
+    group.add_argument("--recipe", nargs='+', help=recipe_help)
+    group.add_argument("--recalc", action="store_true", help="Launch in recalculation mode (skip model generation, use existing .raw/.nf files).")
+    
+    parser.add_argument("--basename", type=str, default="model", help="Base filename for generated files (default: 'model').")
+    parser.add_argument("--csv_log", type=str, default="comparison_results.csv", help="CSV file to append/update results (default: 'comparison_results.csv').")
     parser.add_argument("--physics_mode", type=str, default="thermal",
-                        choices=["thermal", "electrical", "mechanics"])
+                        choices=["thermal", "electrical", "mechanics"],
+                        help="Physics mode which defines interface handling and default properties (default: thermal).")
     parser.add_argument("--solver", type=str, default="both",
                         choices=["chfem", "puma", "both", "skip"],
-                        help="Solver for homogenisation. Use 'skip' to only build the model.")
-    parser.add_argument("--prop_A", type=str, default=None, help="Property for Polymer A")
-    parser.add_argument("--prop_B", type=str, default=None, help="Property for Polymer B")
-    parser.add_argument("--prop_inter2", type=str, default=None, help="Property for Secondary Contact/Tunnel phase")
-    parser.add_argument("--prop_inter", type=str, default=None, help="Property for Primary Contact/Tunnel phase")
-    parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")
+                        help="Solver for homogenisation. Use 'skip' to only build the model without running solvers (default: both).")
+    parser.add_argument("--prop_A", type=str, default=None, help="Property value for Polymer A (Phase 0).")
+    parser.add_argument("--prop_B", type=str, default=None, help="Property value for Polymer B (Phase 1).")
+    parser.add_argument("--prop_inter2", type=str, default=None, help="Property value for Secondary Contact/Tunnel phase (Phase 2).")
+    parser.add_argument("--prop_inter", type=str, default=None, help="Property value for Primary Contact/Tunnel phase (Phase 3).")
+    parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility.")
     parser.add_argument("--tunnel_radius", type=int, default=2, 
-                        help="Radius in voxels for nearest-neighbor (tunneling) detection")
+                        help="Radius in voxels for nearest-neighbor (tunneling/secondary) detection (default: 2).")
     parser.add_argument("--contact_radius", type=int, default=1, 
-                        help="Radius in voxels for primary contact interface thickness")
+                        help="Radius in voxels for primary contact interface thickness (default: 1).")
     parser.add_argument("--stretch_ratios", type=float, nargs='+', default=[1.0], 
-                        help="List of stretch ratios lambda along X-axis")
+                        help="List of stretch ratios (lambda) along X-axis to evaluate deformation (default: 1.0).")
     parser.add_argument("--poisson_ratio", type=float, default=0.4, 
-                        help="Poisson's ratio nu for transverse compression")
-    parser.add_argument("--overwrite_props", action="store_true", help="Overwrite .nf properties with command-line arguments during recalculation")
+                        help="Poisson's ratio (nu) for transverse compression during deformation (default: 0.4).")
+    parser.add_argument("--overwrite_props", action="store_true", help="Overwrite .nf properties with command-line arguments during recalculation.")
     return parser.parse_args()
 
 def main():
