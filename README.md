@@ -15,43 +15,45 @@ This repository provides an end-to-end flat script structure—from structure ge
 * **Cloud & Local Ready**: Includes a `Dockerfile` for local GPU workstations and a Jupyter Notebook for instant execution on Google Colab (T4 GPU).
 
 ## 📦 Dependencies
-`microsimflow` is built on top of high-performance scientific Python libraries and relies on two external physics solvers.
+`microsimflow` relies on several high-performance scientific Python libraries and two external physics solvers.
 
-**Python Libraries:**
-* [NumPy](https://numpy.org/): Core array manipulations for 3D voxel grids.
-* [SciPy](https://scipy.org/): Kinematic transformations (polar decomposition), affine deformation, and 3D convolutions.
-* [Numba](https://numba.pydata.org/): JIT compilation for ultra-fast voxel collision detection and RSA placement.
-* [PyVista](https://docs.pyvista.org/): Exporting standardized 3D visual data (`.vti`, `.vtm`) with metadata for ParaView.
-* [Matplotlib](https://matplotlib.org/): Generating 2D thumbnail slices and experiment charts.
-* [tqdm](https://tqdm.github.io/): CLI progress bars.
+**Python Libraries (see `requirements.txt`):**
+* **Core**: `numpy`, `scipy`, `pandas`
+* **Acceleration**: `numba` (JIT compilation for ultra-fast voxel collision detection and RSA placement)
+* **Visualization & Plotting**: 
+  * `pyvista`: Exporting standardized 3D visual data (`.vti`, `.vtm`) for ParaView.
+  * `matplotlib`, `seaborn`: Generating statistical charts.
+  * `pillow`: Image processing for 2D visual montages.
+* **Utilities**: `tqdm` (CLI progress), `jupyterlab` (Notebook execution)
 
 **External Solvers:**
-* [chfem](https://github.com/m-b-c-a/chfem): (Compiled from C/CUDA) High-performance computational homogenization.
-* [PuMA](https://github.com/nasa/puma): (Python API) NASA's Porous Microstructure Analysis software.
+* **`chfem`**: High-performance computational homogenization (Compiled from C/CUDA).
+* **`PuMA`**: NASA's Porous Microstructure Analysis software.
 
 ---
 
 ## 🚀 Environment Setup
 
-You can run `microsimflow` either locally using Docker or in the cloud using Google Colab.
+We **strongly recommend** using the provided `Dockerfile` to build the environment. 
+Because this workflow relies on specialized physics solvers (`PuMA` via Conda, and a custom CUDA compilation of `chfem`), a standard `pip install -r requirements.txt` will not fully set up the solvers.
 
 ### Option A: Local Run via Docker (Recommended)
-It is recommended to build the environment using the provided `Dockerfile`. 
-This process installs Python dependencies, `PuMA`, and **compiles `chfem` from source** (CUDA 12.x). 
+This process installs all Python dependencies, `PuMA`, and **compiles `chfem` from source** (CUDA 12.x). 
 
-*Important: Because the official `chfem` repository currently fails to build when passing the `-DCUDAPCG_MATKEY_32BIT` flag (required for models with 5+ properties), the Dockerfile uses a temporarily forked version with the necessary typo fixes.*
+> **⚠️ Important note on `chfem`:** > Models with 5 or more properties require the `-DCUDAPCG_MATKEY_32BIT` flag during compilation. Because the official `chfem` repository currently fails to build when this flag is passed, our Dockerfile automatically clones and compiles a **temporarily forked version** that contains the necessary fixes. 
+> The Dockerfile also uses `-DCMAKE_CUDA_ARCHITECTURES=native` to automatically optimize the solver for your local GPU.
 
 ```bash
 # Build the Docker image
 docker build -t microsim_env .
 
-# Run the container
+# Run the container (Requires NVIDIA Container Toolkit)
 docker run -it --rm --gpus all -v $(pwd):/workspace microsim_env bash
 ```
 
 ### Option B: Google Colab (Cloud)
-If you do not have a local GPU, you can use the provided `microsimflow_on_colab.ipynb`. 
-Just upload the notebook to Google Colab, set the runtime to **T4 GPU**, and run the cells. It automatically compiles a compatible version of `chfem` and executes the experiment suite. *(Note: PuMA is disabled in the Colab lightweight environment).*
+If you do not have a local GPU workstation, you can use the provided `microsimflow_on_colab.ipynb`. 
+Upload the notebook to Google Colab, set the runtime to **T4 GPU**, and execute the cells. It automatically handles the custom compilation of the `chfem` fork and executes the experiment suite. *(Note: PuMA is disabled in the Colab lightweight environment).*
 
 ---
 
