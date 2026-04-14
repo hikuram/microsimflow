@@ -2,7 +2,6 @@ FROM nvidia/cuda:12.9.1-devel-ubuntu22.04
 
 # Avoid interactive prompts and set timezone
 ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Asia/Tokyo
 
 # 1. Install system packages and fonts
 # Automatically accept the EULA for ttf-mscorefonts-installer to prevent build halts
@@ -12,7 +11,6 @@ RUN echo ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula selec
     curl \
     bzip2 \
     git \
-    cmake \
     build-essential \
     fontconfig \
     ttf-mscorefonts-installer \
@@ -34,6 +32,7 @@ RUN mkdir -p $MAMBA_ROOT_PREFIX/bin && \
 # 2. Install Python libraries and Jupyter
 RUN micromamba install -y -n base -c conda-forge \
     python=3.10 \
+    cmake \
     puma \
     jupyterlab \
     ipympl \
@@ -64,7 +63,7 @@ RUN git clone https://github.com/hikuram/chfem.git /opt/chfem && \
     export CPLUS_INCLUDE_PATH=${NUMPY_INCLUDE}:${CPLUS_INCLUDE_PATH} && \
     cmake .. \
       -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_CUDA_ARCHITECTURES=120 \
+      -DCMAKE_CUDA_ARCHITECTURES=native \
       -DCMAKE_C_FLAGS="-DCUDAPCG_MATKEY_32BIT" \
       -DCMAKE_CUDA_FLAGS="-DCUDAPCG_MATKEY_32BIT" && \
     make -j4
