@@ -378,7 +378,7 @@ def parse_args():
     parser.add_argument("--bg_type", type=str, default="gyroid",
                         choices=["single", "gyroid", "sea_island", "island_sea", "lamellar", "cylinder", "bcc"],
                         help="Type of continuous polymer background phase (default: gyroid).")
-    parser.add_argument("--phaseA_ratio", type=float, default=0.57, help="Target volume fraction for Phase A in the background (default: 0.57).")
+    parser.add_argument("--phaseA_ratio", type=float, default=0.50, help="Target volume fraction for Phase A in the background (default: 0.50).")
 
     group = parser.add_mutually_exclusive_group(required=True)
     
