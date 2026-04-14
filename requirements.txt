@@ -1,0 +1,16 @@
+# --- microsimflow Python Dependencies ---
+# Note: It is highly recommended to use the provided Dockerfile.
+# 'puma' usually requires conda-forge, and 'chfem' must be compiled from source.
+
+numpy
+scipy
+numba
+pyvista
+matplotlib
+seaborn
+pillow
+pandas
+tqdm
+jupyterlab
+ipympl
+ipyvtklink
