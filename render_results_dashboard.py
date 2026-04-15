@@ -613,30 +613,102 @@ th.sorted-desc .sort-indicator::after {{ content: "▼"; }}
 """
 
 
+def drop_empty_columns(
+    df: pd.DataFrame,
+    columns: Sequence[str],
+    drop_empty_columns_enabled: bool = True,
+) -> List[str]:
+    """Filter out columns that contain no usable values.
+
+    This keeps the dashboard compact when optional result fields are missing
+    in the current CSV. By default, columns are dropped if every cell is empty,
+    NaN, or whitespace-only after string conversion.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Source dataframe loaded from the CSV log.
+    columns : Sequence[str]
+        Candidate columns in display order.
+    drop_empty_columns_enabled : bool, default True
+        If False, preserve all requested columns even when they are empty.
+
+    Returns
+    -------
+    List[str]
+        Filtered column list for rendering.
+    """
+    if not drop_empty_columns_enabled:
+        return [col for col in columns if col in df.columns]
+
+    filtered: List[str] = []
+    for col in columns:
+        if col not in df.columns:
+            continue
+
+        series = df[col]
+        if series.empty:
+            continue
+
+        # Keep the column if at least one value is not null and not blank.
+        non_empty_mask = series.notna() & (series.astype(str).str.strip() != "")
+        if non_empty_mask.any():
+            filtered.append(col)
+
+    return filtered
+
 
 def render_dashboard_from_csv(
-    csv_path: Path | str,
-    output_path: Path | str,
+    csv_path: str,
+    output_path: str,
     columns: Optional[Sequence[str]] = None,
     sort_by: Optional[str] = None,
-    descending: bool = True,
-    max_rows: int = 200,
+    descending: bool = False,
+    max_rows: int = 100,
     title: str = "Simulation Results Dashboard",
     subtitle: str = "Sortable summary with inline data bars.",
-) -> Path:
-    """Render a self-contained HTML dashboard directly from a CSV path."""
-    csv_path = Path(csv_path)
-    output_path = Path(output_path)
+    drop_empty_columns_enabled: bool = True,
+) -> None:
+    """Render a self-contained HTML dashboard from a CSV file.
 
-    df = read_csv(csv_path)
+    This function is designed for direct reuse from the main pipeline.
+    Empty columns are dropped by default so the dashboard stays focused
+    on fields that actually contain values in the current CSV.
+
+    Parameters
+    ----------
+    csv_path : str
+        Input CSV file path.
+    output_path : str
+        Output HTML file path.
+    columns : Optional[Sequence[str]]
+        Optional explicit column list and order.
+    sort_by : Optional[str]
+        Optional initial sort column.
+    descending : bool, default False
+        Use descending order for the initial sort.
+    max_rows : int, default 100
+        Maximum number of rows to include in the dashboard.
+    title : str
+        Dashboard title.
+    subtitle : str
+        Dashboard subtitle.
+    drop_empty_columns_enabled : bool, default True
+        If True, drop columns that contain no usable values.
+    """
+    df = read_csv(Path(csv_path))
     selected_columns = select_columns(df, columns)
     df, selected_columns = split_recipe_column(df, selected_columns)
+    selected_columns = drop_empty_columns(
+        df,
+        selected_columns,
+        drop_empty_columns_enabled=True,
+    )
     df = apply_initial_sort(df, sort_by, descending)
     df = df.loc[:, selected_columns].head(max_rows).copy()
 
     html_text = build_dashboard_html(df, selected_columns, title, subtitle)
-    output_path.write_text(html_text, encoding="utf-8")
-    return output_path
+    Path(output_path).write_text(html_text, encoding="utf-8")
 
 def main() -> None:
     args = parse_args()
