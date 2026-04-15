@@ -138,6 +138,43 @@ python3 run_pipeline.py --recalc --csv_log comparison_results.csv --overwrite_pr
 
 ---
 
+### 5. Rendering a Review Dashboard PNG
+
+You can generate a review-friendly PNG table from a CSV file by using the standalone dashboard renderer.
+This is useful when the result CSV has many columns and you want a compact visual summary with in-cell data bars.
+
+Install the optional dependency first:
+
+```bash
+pip install playwright
+python -m playwright install chromium
+```
+
+Then run the script:
+
+```bash
+python render_results_dashboard.py   --csv results.csv   --output results_dashboard.png
+```
+
+Optional arguments:
+
+- `--max-rows 30`: limit the number of displayed rows.
+- `--sort-by Sigma_xx_chfem`: sort the dashboard by a specific column.
+- `--ascending`: use ascending order instead of descending order.
+- `--columns Case_Name Sigma_xx_chfem Contact_Ratio Connectivity_Ratio`: explicitly choose displayed columns.
+- `--title "microsimflow conductivity review"`: set a custom title.
+- `--subtitle "April 2026 screening set"`: set a custom subtitle.
+
+Default behavior:
+
+- The script prefers conductivity-related columns for sorting if available.
+- Ratio columns such as `Contact_Ratio`, `Tunneling_Ratio`, and `Connectivity_Ratio` are rendered with linear data bars.
+- Conductivity columns are rendered with log-scaled data bars for easier comparison across wide ranges.
+- Count columns are rendered with linear data bars.
+- The output is a fixed-layout PNG intended for quick review and sharing.
+
+---
+
 ## 📁 File Structure Overview
 * `micro_builder.py`: Core logic for 3D microstructure generation, kinematics, and Numba-accelerated RSA (Random Sequential Adsorption) placement.
 * `run_pipeline.py`: The main CLI engine bridging structure generation, deformation, and solver execution.
