@@ -30,6 +30,7 @@ from micro_builder import (
     export_chfem_inputs,
     export_visualization_vti,
     summarize_phase_fractions,
+    compute_structure_metrics,
     apply_background_deformation,
     render_deformed_fillers
 )
@@ -94,6 +95,63 @@ def parse_nf_properties(nf_path):
                 
     return prop_map
 
+
+STRUCTURE_METRIC_COLUMNS = [
+    "Contact_Ratio", "Tunneling_Ratio", "Connectivity_Ratio",
+    "N_Contact_Voxels", "N_Tunnel_Voxels", "N_Filler_Voxels",
+    "N_Conductive_Candidate_Voxels", "N_Largest_Cluster_Voxels", "N_Conductive_Clusters"
+]
+
+
+def structure_metrics_to_csv_fields(metrics):
+    """Format structure metrics for stable CSV output."""
+    return {
+        "Contact_Ratio": f"{metrics['contact_ratio']:.4f}",
+        "Tunneling_Ratio": f"{metrics['tunneling_ratio']:.4f}",
+        "Connectivity_Ratio": f"{metrics['connectivity_ratio']:.4f}",
+        "N_Contact_Voxels": str(metrics['n_contact_voxels']),
+        "N_Tunnel_Voxels": str(metrics['n_tunnel_voxels']),
+        "N_Filler_Voxels": str(metrics['n_filler_voxels']),
+        "N_Conductive_Candidate_Voxels": str(metrics['n_conductive_candidate_voxels']),
+        "N_Largest_Cluster_Voxels": str(metrics['n_largest_cluster_voxels']),
+        "N_Conductive_Clusters": str(metrics['n_conductive_clusters']),
+    }
+
+
+def ensure_structure_metric_columns(header, rows):
+    """Append missing structure-metric columns and pad existing rows."""
+    missing = [col for col in STRUCTURE_METRIC_COLUMNS if col not in header]
+    if not missing:
+        return header, rows
+
+    header = header + missing
+    for row in rows:
+        row.extend([""] * len(missing))
+    return header, rows
+
+
+def upgrade_existing_csv_log(csv_path):
+    """Upgrade an existing CSV log in place when new structure-metric columns are missing."""
+    if not os.path.exists(csv_path):
+        return
+
+    with open(csv_path, 'r', encoding='utf-8', newline='') as f:
+        reader = csv.reader(f)
+        try:
+            header = next(reader)
+        except StopIteration:
+            return
+        rows = list(reader)
+
+    new_header, new_rows = ensure_structure_metric_columns(header, rows)
+    if new_header == header:
+        return
+
+    with open(csv_path, 'w', encoding='utf-8', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(new_header)
+        writer.writerows(new_rows)
+
 def run_recalculation_mode(args):
     """Executes the recalculation pipeline using existing .raw and .nf files"""
     if not os.path.exists(args.csv_log):
@@ -118,6 +176,8 @@ def run_recalculation_mode(args):
         reader = csv.reader(f)
         header = next(reader)
         rows = list(reader)
+
+    header, rows = ensure_structure_metric_columns(header, rows)
 
     # Required metadata columns for identifying files and grid dimensions
     try:
@@ -182,7 +242,18 @@ def run_recalculation_mode(args):
                 # Re-export .nf for chfem with corrected properties
                 export_chfem_inputs(final_grid, basename, voxel_size, mode, prop_map)
 
-            # 4. Execute solvers and collect results (Task 4: Universal T-notation)
+            # 4. Compute lightweight structure metrics directly from final_grid
+            if args.skip_structure_metrics:
+                structure_metrics = {
+                    'contact_ratio': 0.0, 'tunneling_ratio': 0.0, 'connectivity_ratio': 0.0,
+                    'n_contact_voxels': 0, 'n_tunnel_voxels': 0, 'n_filler_voxels': 0,
+                    'n_conductive_candidate_voxels': 0, 'n_largest_cluster_voxels': 0, 'n_conductive_clusters': 0,
+                }
+            else:
+                structure_metrics = compute_structure_metrics(final_grid)
+            metric_fields = structure_metrics_to_csv_fields(structure_metrics)
+
+            # 5. Execute solvers and collect results (Task 4: Universal T-notation)
             chfem_time = ""
             chfem_results = [""] * 6
             puma_time = ""
@@ -202,11 +273,11 @@ def run_recalculation_mode(args):
                     puma_time = f"{ptime:.2f}"
                     puma_results = [pkx, pky, pkz, "", "", ""]
 
-            # 5. Update the row with new metrics
+            # 6. Update the row with new metrics
             try:
                 row[header.index("chfem_Time_s")] = chfem_time
                 row[header.index("puma_Time_s")] = puma_time
-                
+
                 # Map results to universal Txx, Tyy, Tzz, Tyz, Tzx, Txy columns
                 comp_suffixes = ["xx", "yy", "zz", "yz", "zx", "xy"]
                 for i, suffix in enumerate(comp_suffixes):
@@ -214,9 +285,13 @@ def run_recalculation_mode(args):
                     col_p = f"puma_T{suffix}"
                     if col_c in header: row[header.index(col_c)] = chfem_results[i]
                     if col_p in header: row[header.index(col_p)] = puma_results[i]
+
+                for col_name, value in metric_fields.items():
+                    if col_name in header:
+                        row[header.index(col_name)] = value
             except ValueError:
-                pass 
-                
+                pass
+
             writer.writerow(row)
             out_f.flush()
             os.fsync(out_f.fileno())
@@ -420,6 +495,7 @@ Example: --recipe "rigidfiber:0.05:length=60:radius=2:prop=500.0" "flake:0.02:ra
     parser.add_argument("--poisson_ratio", type=float, default=0.4, 
                         help="Poisson's ratio (nu) for transverse compression during deformation (default: 0.4).")
     parser.add_argument("--overwrite_props", action="store_true", help="Overwrite .nf properties with command-line arguments during recalculation.")
+    parser.add_argument("--skip_structure_metrics", action="store_true", help="Skip lightweight post-process structure metrics (enabled by default).")
     return parser.parse_args()
 
 def main():
@@ -435,6 +511,8 @@ def main():
         set_random_seed(args.seed)
         
     # --- Pre-computation Setup ---
+    upgrade_existing_csv_log(args.csv_log)
+
     # Generate the common legend once before entering any loops
     export_common_legend()
     
@@ -654,7 +732,21 @@ def main():
         phase_stats = summarize_phase_fractions(
             final_grid, secondary_inter_id=secondary_inter_id, primary_inter_id=primary_inter_id, filler_start_id=filler_start_id
         )
-        
+        if args.skip_structure_metrics:
+            structure_metrics = {
+                'contact_ratio': 0.0, 'tunneling_ratio': 0.0, 'connectivity_ratio': 0.0,
+                'n_contact_voxels': 0, 'n_tunnel_voxels': 0, 'n_filler_voxels': 0,
+                'n_conductive_candidate_voxels': 0, 'n_largest_cluster_voxels': 0, 'n_conductive_clusters': 0,
+            }
+        else:
+            structure_metrics = compute_structure_metrics(
+                final_grid,
+                primary_inter_id=primary_inter_id,
+                secondary_inter_id=secondary_inter_id,
+                filler_start_id=filler_start_id
+            )
+        metric_fields = structure_metrics_to_csv_fields(structure_metrics)
+
         metadata = {
             "Basename": current_basename,
             "Grid_Size": f"{final_grid.shape[2]}x{final_grid.shape[1]}x{final_grid.shape[0]}",
@@ -668,6 +760,9 @@ def main():
             "Secondary_Inter_Frac": f"{phase_stats['secondary_interface_fraction']:.4f}",
             "Primary_Inter_Frac": f"{phase_stats['primary_interface_fraction']:.4f}",
             "Filler_Frac": f"{phase_stats['filler_total_fraction']:.4f}",
+            "Contact_Ratio": metric_fields["Contact_Ratio"],
+            "Tunneling_Ratio": metric_fields["Tunneling_Ratio"],
+            "Connectivity_Ratio": metric_fields["Connectivity_Ratio"],
             "Stretch_Ratio": str(stretch),
             "Poisson_Ratio": str(args.poisson_ratio) if stretch != 1.0 else "N/A",
         }
@@ -727,8 +822,11 @@ def main():
                 writer.writerow([
                     "Basename", "Grid_Size", "Voxel_Size_m", "BG_Type", "Mode", "Solver", "Recipe", 
                     "Stretch_Ratio", "Poisson_Ratio",
-                    "PolymerA_Frac", "PolymerB_Frac", "Secondary_Inter_Frac", "Primary_Inter_Frac", "Filler_Frac", "Placement_Logs", 
-                    "Slice_Image",
+                    "PolymerA_Frac", "PolymerB_Frac", "Secondary_Inter_Frac", "Primary_Inter_Frac", "Filler_Frac",
+                    "Contact_Ratio", "Tunneling_Ratio", "Connectivity_Ratio",
+                    "N_Contact_Voxels", "N_Tunnel_Voxels", "N_Filler_Voxels", "N_Conductive_Candidate_Voxels",
+                    "N_Largest_Cluster_Voxels", "N_Conductive_Clusters",
+                    "Placement_Logs", "Slice_Image",
                     "chfem_Time_s", "chfem_Txx", "chfem_Tyy", "chfem_Tzz", "chfem_Tyz", "chfem_Tzx", "chfem_Txy",
                     "puma_Time_s", "puma_Txx", "puma_Tyy", "puma_Tzz", "puma_Tyz", "puma_Tzx", "puma_Txy"
                 ])
@@ -741,6 +839,9 @@ def main():
                 f"{phase_stats['secondary_interface_fraction']:.4f}", 
                 f"{phase_stats['primary_interface_fraction']:.4f}", 
                 f"{phase_stats['filler_total_fraction']:.4f}",
+                metric_fields["Contact_Ratio"], metric_fields["Tunneling_Ratio"], metric_fields["Connectivity_Ratio"],
+                metric_fields["N_Contact_Voxels"], metric_fields["N_Tunnel_Voxels"], metric_fields["N_Filler_Voxels"],
+                metric_fields["N_Conductive_Candidate_Voxels"], metric_fields["N_Largest_Cluster_Voxels"], metric_fields["N_Conductive_Clusters"],
                 " | ".join(current_step_logs),
                 slice_filename,
                 chfem_time, *chfem_results,
