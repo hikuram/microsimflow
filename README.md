@@ -138,40 +138,32 @@ python3 run_pipeline.py --recalc --csv_log comparison_results.csv --overwrite_pr
 
 ---
 
-### 5. Rendering a Review Dashboard PNG
+### 5. Rendering a Review Dashboard from the CSV Log
 
-You can generate a review-friendly PNG table from a CSV file by using the standalone dashboard renderer.
-This is useful when the result CSV has many columns and you want a compact visual summary with in-cell data bars.
-
-Install the optional dependency first:
+For quick result review, you can render a self-contained HTML dashboard from a CSV log. The dashboard uses fixed styling, inline data bars, and client-side column sorting implemented with embedded JavaScript. No browser automation or external CDN assets are required.
 
 ```bash
-pip install playwright
-python -m playwright install chromium
+python3 render_results_dashboard.py \
+  --csv comparison_results.csv \
+  --output comparison_results_dashboard.html \
+  --sort-by Connectivity_Ratio \
+  --descending
 ```
 
-Then run the script:
+**What the dashboard provides:**
+* A compact review table for the latest CSV results.
+* Inline data bars for ratio, fraction, conductivity-like, and count columns.
+* Click-to-sort column headers for quick manual inspection in a browser.
+* A fully self-contained `.html` output that can be opened offline.
 
-```bash
-python render_results_dashboard.py   --csv results.csv   --output results_dashboard.png
-```
-
-Optional arguments:
-
-- `--max-rows 30`: limit the number of displayed rows.
-- `--sort-by Sigma_xx_chfem`: sort the dashboard by a specific column.
-- `--ascending`: use ascending order instead of descending order.
-- `--columns Case_Name Sigma_xx_chfem Contact_Ratio Connectivity_Ratio`: explicitly choose displayed columns.
-- `--title "microsimflow conductivity review"`: set a custom title.
-- `--subtitle "April 2026 screening set"`: set a custom subtitle.
-
-Default behavior:
-
-- The script prefers conductivity-related columns for sorting if available.
-- Ratio columns such as `Contact_Ratio`, `Tunneling_Ratio`, and `Connectivity_Ratio` are rendered with linear data bars.
-- Conductivity columns are rendered with log-scaled data bars for easier comparison across wide ranges.
-- Count columns are rendered with linear data bars.
-- The output is a fixed-layout PNG intended for quick review and sharing.
+**Useful arguments:**
+* `--csv`: Input CSV file path.
+* `--output`: Output HTML file path.
+* `--columns`: Optional explicit column list and order.
+* `--sort-by`: Optional initial sort column.
+* `--descending`: Use descending order for the initial sort.
+* `--max-rows`: Maximum number of rows to include in the HTML table.
+* `--title`, `--subtitle`: Optional labels for the dashboard header.
 
 ---
 

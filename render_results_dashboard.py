@@ -1,382 +1,531 @@
 #!/usr/bin/env python3
-"""Render a review-friendly dashboard table from a CSV file.
+"""Render a sortable HTML review dashboard from a CSV results file.
 
-This script reads a result CSV, selects a compact set of columns, and renders
-an Excel-like dashboard table with in-cell data bars. The output is a PNG image
-that can be quickly shared for review.
-
-The implementation uses pandas for tabular processing and Playwright for HTML
-rendering and PNG export. The script is intentionally standalone so that the
-visual style can be tuned without touching the main simulation pipeline.
+This standalone script reads a results CSV file, builds a compact dashboard-like
+HTML table with data bars, and writes a self-contained HTML file. The output is
+intended for quick visual review in a browser without adding heavy dependencies.
 """
 
 from __future__ import annotations
 
 import argparse
-import asyncio
 import html
 import math
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-import numpy as np
 import pandas as pd
 
-try:
-    from playwright.async_api import async_playwright
-except ImportError as exc:  # pragma: no cover - import guard for optional dependency
-    raise SystemExit(
-        "Playwright is required for this script. Install it with:\n"
-        "  pip install playwright\n"
-        "  python -m playwright install chromium"
-    ) from exc
 
-
-DEFAULT_COLUMNS: List[str] = [
-    "Case_Name",
-    "Case_ID",
+# Default columns are ordered for quick review rather than completeness.
+DEFAULT_COLUMN_CANDIDATES: List[str] = [
+    "Model",
+    "ModelName",
+    "Basename",
+    "Dir",
+    "Recipe",
+    "Solver",
+    "BG_Type",
+    "Physics_Mode",
+    "VF_Target",
+    "VF_Filler",
     "Filler_Volume_Fraction",
-    "Sigma_xx_chfem",
-    "Sigma_xx_puma",
+    "Chfem_Txx",
+    "PuMA_Txx",
+    "Chfem_Tyy",
+    "PuMA_Tyy",
+    "Chfem_Tzz",
+    "PuMA_Tzz",
     "Contact_Ratio",
     "Tunneling_Ratio",
     "Connectivity_Ratio",
-    "N_Conductive_Clusters",
-    "N_Largest_Cluster_Voxels",
-]
-
-RATIO_COLUMNS = {
-    "Filler_Volume_Fraction",
-    "Contact_Ratio",
-    "Tunneling_Ratio",
-    "Connectivity_Ratio",
-}
-
-CONDUCTIVITY_CANDIDATES = [
-    "Sigma_xx_chfem",
-    "Sigma_xx_puma",
-    "Sigma_xx",
-    "Effective_Conductivity",
-    "Txx",
-]
-
-COUNT_COLUMNS = {
     "N_Conductive_Clusters",
     "N_Largest_Cluster_Voxels",
     "N_Conductive_Candidate_Voxels",
     "N_Filler_Voxels",
     "N_Contact_Voxels",
     "N_Tunnel_Voxels",
-}
+]
 
+# Columns that are usually easier to compare with a linear data bar.
+LINEAR_BAR_KEYWORDS: Tuple[str, ...] = (
+    "ratio",
+    "fraction",
+    "vf",
+    "volume_fraction",
+    "voxels",
+    "clusters",
+)
 
-# Column labels are shortened for dashboard readability.
-DISPLAY_LABELS: Dict[str, str] = {
-    "Case_Name": "Case",
-    "Case_ID": "ID",
-    "Filler_Volume_Fraction": "Filler VF",
-    "Sigma_xx_chfem": "Sigma xx (chfem)",
-    "Sigma_xx_puma": "Sigma xx (PuMA)",
-    "Sigma_xx": "Sigma xx",
-    "Effective_Conductivity": "Eff. Cond.",
-    "Contact_Ratio": "Contact",
-    "Tunneling_Ratio": "Tunnel",
-    "Connectivity_Ratio": "Connectivity",
-    "N_Conductive_Clusters": "Clusters",
-    "N_Largest_Cluster_Voxels": "Largest Cluster",
-    "N_Conductive_Candidate_Voxels": "Cond. Voxels",
-    "N_Filler_Voxels": "Filler Voxels",
-    "N_Contact_Voxels": "Contact Voxels",
-    "N_Tunnel_Voxels": "Tunnel Voxels",
-}
+# Columns that often span orders of magnitude and benefit from log scaling.
+LOG_BAR_KEYWORDS: Tuple[str, ...] = (
+    "cond",
+    "sigma",
+    "txx",
+    "tyy",
+    "tzz",
+    "txy",
+    "tyz",
+    "tzx",
+    "effective",
+)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Render a review dashboard PNG from a microsimflow CSV result file."
+        description="Render a self-contained HTML review dashboard from a CSV file."
     )
-    parser.add_argument("--csv", required=True, help="Path to the input CSV file.")
-    parser.add_argument("--output", required=True, help="Path to the output PNG file.")
+    parser.add_argument("--csv", required=True, help="Input CSV file path.")
     parser.add_argument(
-        "--max-rows",
-        type=int,
-        default=30,
-        help="Maximum number of rows to display in the dashboard.",
-    )
-    parser.add_argument(
-        "--sort-by",
-        default=None,
-        help="Column used for sorting. Defaults to a conductivity column if available.",
-    )
-    parser.add_argument(
-        "--ascending",
-        action="store_true",
-        help="Sort in ascending order. Default is descending.",
+        "--output",
+        required=True,
+        help="Output HTML file path.",
     )
     parser.add_argument(
         "--columns",
         nargs="*",
         default=None,
-        help="Optional explicit list of columns to display.",
+        help="Optional list of columns to display in the given order.",
+    )
+    parser.add_argument(
+        "--sort-by",
+        default=None,
+        help="Optional column name used for initial sorting.",
+    )
+    parser.add_argument(
+        "--descending",
+        action="store_true",
+        help="Use descending order for the initial sort.",
+    )
+    parser.add_argument(
+        "--max-rows",
+        type=int,
+        default=40,
+        help="Maximum number of rows to include in the dashboard.",
     )
     parser.add_argument(
         "--title",
-        default="microsimflow results dashboard",
-        help="Title shown above the table.",
+        default="microsimflow review dashboard",
+        help="Dashboard title.",
     )
     parser.add_argument(
         "--subtitle",
-        default=None,
-        help="Optional subtitle. If omitted, a short auto summary is shown.",
+        default="Sortable HTML summary with inline data bars.",
+        help="Dashboard subtitle.",
     )
     return parser.parse_args()
 
 
-def choose_columns(df: pd.DataFrame, requested_columns: Optional[Sequence[str]]) -> List[str]:
-    if requested_columns:
-        return [name for name in requested_columns if name in df.columns]
-    return [name for name in DEFAULT_COLUMNS if name in df.columns]
+def read_csv(csv_path: Path) -> pd.DataFrame:
+    # Keep the original columns and let pandas infer types where possible.
+    return pd.read_csv(csv_path)
 
 
-def choose_sort_column(df: pd.DataFrame, requested: Optional[str]) -> Optional[str]:
-    if requested and requested in df.columns:
-        return requested
-    for candidate in CONDUCTIVITY_CANDIDATES:
-        if candidate in df.columns:
-            return candidate
-    for candidate in ["Connectivity_Ratio", "Contact_Ratio", "Filler_Volume_Fraction"]:
-        if candidate in df.columns:
-            return candidate
+def select_columns(df: pd.DataFrame, user_columns: Optional[Sequence[str]]) -> List[str]:
+    if user_columns:
+        return [col for col in user_columns if col in df.columns]
+
+    selected: List[str] = []
+    for candidate in DEFAULT_COLUMN_CANDIDATES:
+        if candidate in df.columns and candidate not in selected:
+            selected.append(candidate)
+
+    if selected:
+        return selected
+
+    # Fall back to the first columns when none of the preferred names exist.
+    return list(df.columns[: min(12, len(df.columns))])
+
+
+def apply_initial_sort(
+    df: pd.DataFrame,
+    sort_by: Optional[str],
+    descending: bool,
+) -> pd.DataFrame:
+    if sort_by and sort_by in df.columns:
+        return df.sort_values(by=sort_by, ascending=not descending, na_position="last")
+    return df
+
+
+def detect_numeric_columns(df: pd.DataFrame, columns: Sequence[str]) -> List[str]:
+    numeric_columns: List[str] = []
+    for col in columns:
+        converted = pd.to_numeric(df[col], errors="coerce")
+        if converted.notna().any():
+            numeric_columns.append(col)
+    return numeric_columns
+
+
+def compute_numeric_series(df: pd.DataFrame, columns: Sequence[str]) -> Dict[str, pd.Series]:
+    return {col: pd.to_numeric(df[col], errors="coerce") for col in columns}
+
+
+def classify_bar_mode(column_name: str) -> Optional[str]:
+    lower_name = column_name.lower()
+    if any(token in lower_name for token in LOG_BAR_KEYWORDS):
+        return "log"
+    if any(token in lower_name for token in LINEAR_BAR_KEYWORDS):
+        return "linear"
     return None
 
 
-def clamp01(value: float) -> float:
-    if math.isnan(value):
-        return 0.0
-    return max(0.0, min(1.0, value))
+def is_ratio_like(column_name: str) -> bool:
+    lower_name = column_name.lower()
+    return "ratio" in lower_name or "fraction" in lower_name or lower_name.startswith("vf")
 
 
-def safe_numeric(series: pd.Series) -> pd.Series:
-    return pd.to_numeric(series, errors="coerce")
-
-
-def normalize_linear(series: pd.Series) -> pd.Series:
-    numeric = safe_numeric(series)
-    min_value = numeric.min(skipna=True)
-    max_value = numeric.max(skipna=True)
-    if pd.isna(min_value) or pd.isna(max_value) or max_value <= min_value:
-        return pd.Series(np.where(numeric.notna(), 1.0, np.nan), index=series.index, dtype=float)
-    return (numeric - min_value) / (max_value - min_value)
-
-
-def normalize_log10(series: pd.Series) -> pd.Series:
-    numeric = safe_numeric(series)
-    positive = numeric.where(numeric > 0)
-    if positive.notna().sum() == 0:
-        return pd.Series(np.nan, index=series.index, dtype=float)
-    logged = np.log10(positive)
-    min_value = logged.min(skipna=True)
-    max_value = logged.max(skipna=True)
-    if pd.isna(min_value) or pd.isna(max_value) or max_value <= min_value:
-        return pd.Series(np.where(positive.notna(), 1.0, np.nan), index=series.index, dtype=float)
-    return (logged - min_value) / (max_value - min_value)
-
-
-def infer_bar_columns(df: pd.DataFrame, columns: Sequence[str]) -> Dict[str, pd.Series]:
-    bar_map: Dict[str, pd.Series] = {}
-    for name in columns:
-        if name in RATIO_COLUMNS:
-            bar_map[name] = safe_numeric(df[name]).clip(lower=0.0, upper=1.0)
-        elif name in COUNT_COLUMNS:
-            bar_map[name] = normalize_linear(df[name])
-        elif name in CONDUCTIVITY_CANDIDATES:
-            bar_map[name] = normalize_log10(df[name])
-    return bar_map
-
-
-def format_value(name: str, value: object) -> str:
+def format_value(value: object, column_name: str) -> str:
     if pd.isna(value):
-        return "-"
-    if name in RATIO_COLUMNS:
-        return f"{float(value):.3f}"
-    if name in COUNT_COLUMNS:
-        return f"{int(round(float(value))):,}"
-    if name in CONDUCTIVITY_CANDIDATES:
-        return f"{float(value):.3e}"
-    if isinstance(value, (int, np.integer)):
-        return f"{int(value):,}"
-    if isinstance(value, (float, np.floating)):
-        return f"{float(value):.3f}"
+        return ""
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if is_ratio_like(column_name):
+            return f"{value:.4f}"
+        abs_value = abs(float(value))
+        if abs_value == 0:
+            return "0"
+        if abs_value >= 1000 or abs_value < 1e-3:
+            return f"{value:.3e}"
+        if abs_value >= 100:
+            return f"{value:.1f}"
+        if abs_value >= 1:
+            return f"{value:.3f}"
+        return f"{value:.4f}"
+
     return str(value)
 
 
-def build_table_html(
+def build_bar_normalizer(series: pd.Series, mode: str):
+    valid = series.dropna()
+    if valid.empty:
+        return lambda _: None
+
+    if mode == "log":
+        positive = valid[valid > 0]
+        if positive.empty:
+            return lambda _: None
+        log_values = positive.map(math.log10)
+        lo = float(log_values.min())
+        hi = float(log_values.max())
+        if math.isclose(lo, hi):
+            return lambda value: 1.0 if pd.notna(value) and float(value) > 0 else None
+
+        def normalize(value: object) -> Optional[float]:
+            if pd.isna(value):
+                return None
+            value_f = float(value)
+            if value_f <= 0:
+                return None
+            return max(0.0, min(1.0, (math.log10(value_f) - lo) / (hi - lo)))
+
+        return normalize
+
+    lo = float(valid.min())
+    hi = float(valid.max())
+    if math.isclose(lo, hi):
+        return lambda value: 1.0 if pd.notna(value) else None
+
+    def normalize(value: object) -> Optional[float]:
+        if pd.isna(value):
+            return None
+        value_f = float(value)
+        return max(0.0, min(1.0, (value_f - lo) / (hi - lo)))
+
+    return normalize
+
+
+def prepare_bar_metadata(df: pd.DataFrame, columns: Sequence[str]) -> Dict[str, Tuple[str, object]]:
+    metadata: Dict[str, Tuple[str, object]] = {}
+    numeric_series = compute_numeric_series(df, columns)
+    for col, series in numeric_series.items():
+        mode = classify_bar_mode(col)
+        if mode is None:
+            continue
+        metadata[col] = (mode, build_bar_normalizer(series, mode))
+    return metadata
+
+
+def make_header_html(columns: Sequence[str]) -> str:
+    header_cells = []
+    for col in columns:
+        escaped = html.escape(col)
+        header_cells.append(
+            f'<th class="sortable" data-column="{escaped}"><button type="button">{escaped}<span class="sort-indicator"></span></button></th>'
+        )
+    return "\n".join(header_cells)
+
+
+def render_plain_cell(display_text: str, sort_value: str) -> str:
+    escaped_text = html.escape(display_text)
+    escaped_sort = html.escape(sort_value)
+    return f'<td data-sort-value="{escaped_sort}"><span class="cell-text">{escaped_text}</span></td>'
+
+
+def render_bar_cell(display_text: str, sort_value: str, ratio: Optional[float], mode: str) -> str:
+    escaped_text = html.escape(display_text)
+    escaped_sort = html.escape(sort_value)
+    ratio_percent = 0.0 if ratio is None else max(0.0, min(100.0, ratio * 100.0))
+    mode_class = "bar-log" if mode == "log" else "bar-linear"
+    return (
+        f'<td class="bar-cell" data-sort-value="{escaped_sort}">'
+        f'<div class="bar-shell">'
+        f'<div class="bar-fill {mode_class}" style="width:{ratio_percent:.2f}%"></div>'
+        f'<span class="bar-label">{escaped_text}</span>'
+        f'</div>'
+        f'</td>'
+    )
+
+
+def make_body_html(
+    df: pd.DataFrame,
+    columns: Sequence[str],
+    bar_metadata: Dict[str, Tuple[str, object]],
+) -> str:
+    rows_html: List[str] = []
+    for _, row in df.iterrows():
+        cells_html: List[str] = []
+        for col in columns:
+            raw_value = row[col]
+            numeric_value = pd.to_numeric(pd.Series([raw_value]), errors="coerce").iloc[0]
+            display_text = format_value(raw_value, col)
+            sort_value = "" if pd.isna(numeric_value) else repr(float(numeric_value))
+            if col in bar_metadata:
+                mode, normalizer = bar_metadata[col]
+                ratio = normalizer(numeric_value)
+                cells_html.append(render_bar_cell(display_text, sort_value or display_text, ratio, mode))
+            else:
+                cells_html.append(render_plain_cell(display_text, sort_value or display_text))
+        rows_html.append("<tr>" + "".join(cells_html) + "</tr>")
+    return "\n".join(rows_html)
+
+
+def build_dashboard_html(
     df: pd.DataFrame,
     columns: Sequence[str],
     title: str,
     subtitle: str,
 ) -> str:
-    bar_map = infer_bar_columns(df, columns)
-    header_html = "".join(
-        f"<th>{html.escape(DISPLAY_LABELS.get(name, name))}</th>" for name in columns
-    )
+    header_html = make_header_html(columns)
+    bar_metadata = prepare_bar_metadata(df, columns)
+    body_html = make_body_html(df, columns, bar_metadata)
+    row_count = len(df)
+    escaped_title = html.escape(title)
+    escaped_subtitle = html.escape(subtitle)
 
-    row_chunks: List[str] = []
-    for row_index, (_, row) in enumerate(df.iterrows(), start=1):
-        cell_chunks = [f"<td class='row-index'>{row_index}</td>"]
-        for name in columns:
-            value = row.get(name)
-            text = html.escape(format_value(name, value))
-            if name in bar_map:
-                bar_value = clamp01(float(bar_map[name].get(row.name, np.nan))) if not pd.isna(bar_map[name].get(row.name, np.nan)) else 0.0
-                cell_html = (
-                    "<td class='metric-cell'>"
-                    f"<div class='bar-track'><div class='bar-fill' style='width:{bar_value * 100:.1f}%'></div></div>"
-                    f"<span class='metric-text'>{text}</span>"
-                    "</td>"
-                )
-            else:
-                extra_class = " text-cell" if isinstance(value, str) else " number-cell"
-                cell_html = f"<td class='{extra_class.strip()}'>{text}</td>"
-            cell_chunks.append(cell_html)
-        row_chunks.append(f"<tr>{''.join(cell_chunks)}</tr>")
-
-    return f"""
-<!DOCTYPE html>
+    # Keep the document self-contained so it can be opened offline.
+    return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<title>{html.escape(title)}</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{escaped_title}</title>
 <style>
-  :root {{
-    --bg: #ffffff;
-    --fg: #1f2937;
-    --muted: #6b7280;
-    --line: #d1d5db;
-    --stripe: #f9fafb;
-    --bar-bg: #eef2ff;
-    --bar-fill: linear-gradient(90deg, #93c5fd 0%, #60a5fa 100%);
-  }}
-  html, body {{
-    margin: 0;
-    padding: 0;
-    background: var(--bg);
-    color: var(--fg);
-    font-family: Arial, Helvetica, sans-serif;
-  }}
-  .wrap {{
-    width: max-content;
-    padding: 18px 20px 22px 20px;
-  }}
-  .title {{
-    font-size: 22px;
-    font-weight: 700;
-    margin-bottom: 4px;
-  }}
-  .subtitle {{
-    font-size: 12px;
-    color: var(--muted);
-    margin-bottom: 14px;
-  }}
-  table {{
-    border-collapse: collapse;
-    border: 1px solid var(--line);
-    font-size: 12px;
-    white-space: nowrap;
-  }}
-  thead th {{
-    background: #f3f4f6;
-    border-bottom: 1px solid var(--line);
-    padding: 8px 10px;
-    text-align: left;
-    font-weight: 700;
-  }}
-  tbody td {{
-    border-top: 1px solid #eceff1;
-    padding: 6px 10px;
-    vertical-align: middle;
-  }}
-  tbody tr:nth-child(even) td {{
-    background: var(--stripe);
-  }}
-  .row-index {{
-    color: var(--muted);
-    text-align: right;
-    min-width: 28px;
-  }}
-  .text-cell {{
-    text-align: left;
-    min-width: 120px;
-    max-width: 260px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }}
-  .number-cell {{
-    text-align: right;
-    min-width: 88px;
-  }}
-  .metric-cell {{
-    position: relative;
-    text-align: right;
-    min-width: 120px;
-    padding-right: 10px;
-  }}
-  .bar-track {{
-    position: absolute;
-    left: 8px;
-    right: 8px;
-    top: 50%;
-    height: 16px;
-    transform: translateY(-50%);
-    background: var(--bar-bg);
-    border-radius: 4px;
-    overflow: hidden;
-    opacity: 0.95;
-  }}
-  .bar-fill {{
-    height: 100%;
-    background: var(--bar-fill);
-    border-radius: 4px;
-  }}
-  .metric-text {{
-    position: relative;
-    z-index: 1;
-    font-variant-numeric: tabular-nums;
-  }}
+:root {{
+  --bg: #0b1020;
+  --panel: #131a2a;
+  --panel-2: #172033;
+  --grid: #25324a;
+  --text: #e5ecf6;
+  --muted: #99a7bd;
+  --accent: #66b3ff;
+  --accent-2: #7ee0c3;
+  --bar-log: linear-gradient(90deg, rgba(102,179,255,0.60), rgba(126,224,195,0.65));
+  --bar-linear: linear-gradient(90deg, rgba(126,224,195,0.55), rgba(102,179,255,0.45));
+}}
+* {{ box-sizing: border-box; }}
+body {{
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}}
+.main {{
+  padding: 20px 24px 28px;
+}}
+.header {{
+  margin-bottom: 16px;
+}}
+.title {{
+  font-size: 24px;
+  font-weight: 700;
+  margin: 0 0 4px;
+}}
+.subtitle {{
+  font-size: 13px;
+  color: var(--muted);
+  margin: 0;
+}}
+.meta {{
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}}
+.table-wrap {{
+  border: 1px solid var(--grid);
+  border-radius: 14px;
+  overflow: auto;
+  background: var(--panel);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.20);
+}}
+table {{
+  width: max-content;
+  min-width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}}
+thead th {{
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--grid);
+  padding: 0;
+  text-align: left;
+  white-space: nowrap;
+}}
+thead th button {{
+  appearance: none;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  padding: 10px 12px;
+  text-align: left;
+}}
+thead th button:hover {{
+  background: rgba(255, 255, 255, 0.03);
+}}
+tbody td {{
+  padding: 9px 12px;
+  border-bottom: 1px solid rgba(37, 50, 74, 0.75);
+  white-space: nowrap;
+  vertical-align: middle;
+}}
+tbody tr:nth-child(odd) td {{
+  background: rgba(255, 255, 255, 0.01);
+}}
+tbody tr:hover td {{
+  background: rgba(102, 179, 255, 0.06);
+}}
+.sort-indicator {{
+  margin-left: 6px;
+  color: var(--muted);
+}}
+th.sorted-asc .sort-indicator::after {{ content: "▲"; }}
+th.sorted-desc .sort-indicator::after {{ content: "▼"; }}
+.cell-text {{
+  font-variant-numeric: tabular-nums;
+}}
+.bar-cell {{
+  min-width: 164px;
+}}
+.bar-shell {{
+  position: relative;
+  min-width: 140px;
+  height: 28px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}}
+.bar-fill {{
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 7px;
+}}
+.bar-linear {{
+  background: var(--bar-linear);
+}}
+.bar-log {{
+  background: var(--bar-log);
+}}
+.bar-label {{
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  height: 100%;
+  padding: 0 10px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}}
+.footer {{
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}}
 </style>
 </head>
 <body>
-  <div class="wrap">
-    <div class="title">{html.escape(title)}</div>
-    <div class="subtitle">{html.escape(subtitle)}</div>
-    <table>
+<div class="main">
+  <div class="header">
+    <h1 class="title">{escaped_title}</h1>
+    <p class="subtitle">{escaped_subtitle}</p>
+    <div class="meta">Rows shown: {row_count} | Click a column header to sort.</div>
+  </div>
+  <div class="table-wrap">
+    <table id="dashboard-table">
       <thead>
-        <tr><th>#</th>{header_html}</tr>
+        <tr>
+          {header_html}
+        </tr>
       </thead>
       <tbody>
-        {''.join(row_chunks)}
+        {body_html}
       </tbody>
     </table>
   </div>
+  <div class="footer">This file is self-contained and can be reviewed offline in a web browser.</div>
+</div>
+<script>
+(function() {{
+  const table = document.getElementById('dashboard-table');
+  const headers = Array.from(table.querySelectorAll('thead th'));
+  const tbody = table.querySelector('tbody');
+
+  function parseSortValue(cell) {{
+    const raw = cell.getAttribute('data-sort-value') || '';
+    const numeric = Number(raw);
+    if (raw !== '' && !Number.isNaN(numeric)) {{
+      return {{ type: 'number', value: numeric }};
+    }}
+    return {{ type: 'string', value: raw.toLowerCase() }};
+  }}
+
+  function clearHeaderState() {{
+    headers.forEach((th) => th.classList.remove('sorted-asc', 'sorted-desc'));
+  }}
+
+  headers.forEach((th, columnIndex) => {{
+    th.querySelector('button').addEventListener('click', () => {{
+      const currentDesc = th.classList.contains('sorted-desc');
+      const nextDesc = !currentDesc;
+      const rows = Array.from(tbody.querySelectorAll('tr'));
+
+      rows.sort((rowA, rowB) => {{
+        const a = parseSortValue(rowA.children[columnIndex]);
+        const b = parseSortValue(rowB.children[columnIndex]);
+        if (a.type === 'number' && b.type === 'number') {{
+          return nextDesc ? b.value - a.value : a.value - b.value;
+        }}
+        if (a.value < b.value) return nextDesc ? 1 : -1;
+        if (a.value > b.value) return nextDesc ? -1 : 1;
+        return 0;
+      }});
+
+      clearHeaderState();
+      th.classList.add(nextDesc ? 'sorted-desc' : 'sorted-asc');
+      rows.forEach((row) => tbody.appendChild(row));
+    }});
+  }});
+}})();
+</script>
 </body>
 </html>
 """
-
-
-def build_subtitle(csv_path: Path, row_count: int, sort_by: Optional[str], ascending: bool) -> str:
-    order = "ascending" if ascending else "descending"
-    if sort_by:
-        return f"Source: {csv_path.name} | Rows shown: {row_count} | Sorted by: {sort_by} ({order})"
-    return f"Source: {csv_path.name} | Rows shown: {row_count}"
-
-
-async def render_html_to_png(html_content: str, output_path: Path) -> None:
-    async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch()
-        page = await browser.new_page(device_scale_factor=2)
-        await page.set_content(html_content, wait_until="networkidle")
-        await page.screenshot(path=str(output_path), full_page=True)
-        await browser.close()
 
 
 def main() -> None:
@@ -384,27 +533,14 @@ def main() -> None:
     csv_path = Path(args.csv)
     output_path = Path(args.output)
 
-    df = pd.read_csv(csv_path)
-    if df.empty:
-        raise SystemExit(f"Input CSV has no rows: {csv_path}")
+    df = read_csv(csv_path)
+    columns = select_columns(df, args.columns)
+    df = apply_initial_sort(df, args.sort_by, args.descending)
+    df = df.loc[:, columns].head(args.max_rows).copy()
 
-    columns = choose_columns(df, args.columns)
-    if not columns:
-        raise SystemExit("No displayable columns were found in the CSV file.")
-
-    sort_by = choose_sort_column(df, args.sort_by)
-    if sort_by:
-        sorted_df = df.sort_values(by=sort_by, ascending=args.ascending, na_position="last")
-    else:
-        sorted_df = df.copy()
-
-    dashboard_df = sorted_df.loc[:, columns].head(args.max_rows).reset_index(drop=True)
-    subtitle = args.subtitle or build_subtitle(csv_path, len(dashboard_df), sort_by, args.ascending)
-    html_content = build_table_html(dashboard_df, columns, args.title, subtitle)
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    asyncio.run(render_html_to_png(html_content, output_path))
-    print(f"Saved dashboard image to: {output_path}")
+    html_text = build_dashboard_html(df, columns, args.title, args.subtitle)
+    output_path.write_text(html_text, encoding="utf-8")
+    print(f"Saved HTML dashboard to: {output_path}")
 
 
 if __name__ == "__main__":
