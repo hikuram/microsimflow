@@ -19,23 +19,23 @@ import pandas as pd
 
 # Default columns are ordered for quick review rather than completeness.
 DEFAULT_COLUMN_CANDIDATES: List[str] = [
-    "Model",
-    "ModelName",
     "Basename",
-    "Dir",
+    "Grid_Size",
     "Recipe",
-    "Solver",
     "BG_Type",
-    "Physics_Mode",
-    "VF_Target",
-    "VF_Filler",
-    "Filler_Volume_Fraction",
+    "Mode",
+    "Stretch_ratio",
+    "PolymerA_Frac",
+    "PolymerB_Frac",
+    "Secondary_Inter_Frac",
+    "Primary_Inter_Frac",
+    "Filler_Frac",
     "chfem_Txx",
-    "PuMA_Txx",
     "chfem_Tyy",
-    "PuMA_Tyy",
     "chfem_Tzz",
-    "PuMA_Tzz",
+    "puma_Txx",
+    "puma_Tyy",
+    "puma_Tzz",
     "Contact_Ratio",
     "Tunneling_Ratio",
     "Connectivity_Ratio",
@@ -45,12 +45,14 @@ DEFAULT_COLUMN_CANDIDATES: List[str] = [
     "N_Filler_Voxels",
     "N_Contact_Voxels",
     "N_Tunnel_Voxels",
+    "chfem_Time_s",
+    "puma_Time_s",
 ]
 
-LINEAR_BAR_KEYWORDS: Tuple[str, ...] = ("ratio", "fraction", "vf", "volume_fraction")
-LOG_BAR_KEYWORDS: Tuple[str, ...] = ("cond", "sigma", "txx", "tyy", "tzz", "txy", "tyz", "tzx", "effective")
+LINEAR_BAR_KEYWORDS: Tuple[str, ...] = ("ratio", "frac", "time")
+LOG_BAR_KEYWORDS: Tuple[str, ...] = ("txx", "tyy", "tzz", "txy", "tyz", "tzx")
 COUNT_BAR_KEYWORDS: Tuple[str, ...] = ("voxels", "clusters", "n_")
-CATEGORICAL_KEYWORDS: Tuple[str, ...] = ("model", "recipe", "solver", "bg_type", "physics_mode")
+CATEGORICAL_KEYWORDS: Tuple[str, ...] = ("model", "recipe", "solver", "type", "mode", "grid_size")
 
 
 def parse_args() -> argparse.Namespace:
@@ -62,7 +64,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--columns", nargs="*", default=None, help="Optional list of columns to display.")
     parser.add_argument("--sort-by", default=None, help="Optional column name used for initial sorting.")
     parser.add_argument("--descending", action="store_true", help="Use descending order for the initial sort.")
-    parser.add_argument("--max-rows", type=int, default=100, help="Maximum number of rows to include.")
+    parser.add_argument("--max-rows", type=int, default=200, help="Maximum number of rows to include.")
     parser.add_argument("--title", default="Simulation Results Dashboard", help="Dashboard title.")
     parser.add_argument("--subtitle", default="Sortable summary with inline data bars.", help="Dashboard subtitle.")
     return parser.parse_args()
@@ -611,20 +613,44 @@ th.sorted-desc .sort-indicator::after {{ content: "▼"; }}
 """
 
 
+
+def render_dashboard_from_csv(
+    csv_path: Path | str,
+    output_path: Path | str,
+    columns: Optional[Sequence[str]] = None,
+    sort_by: Optional[str] = None,
+    descending: bool = True,
+    max_rows: int = 200,
+    title: str = "Simulation Results Dashboard",
+    subtitle: str = "Sortable summary with inline data bars.",
+) -> Path:
+    """Render a self-contained HTML dashboard directly from a CSV path."""
+    csv_path = Path(csv_path)
+    output_path = Path(output_path)
+
+    df = read_csv(csv_path)
+    selected_columns = select_columns(df, columns)
+    df, selected_columns = split_recipe_column(df, selected_columns)
+    df = apply_initial_sort(df, sort_by, descending)
+    df = df.loc[:, selected_columns].head(max_rows).copy()
+
+    html_text = build_dashboard_html(df, selected_columns, title, subtitle)
+    output_path.write_text(html_text, encoding="utf-8")
+    return output_path
+
 def main() -> None:
     args = parse_args()
-    df = read_csv(Path(args.csv))
-    columns = select_columns(df, args.columns)
-    
-    # Pre-process: split Recipe into constituent columns dynamically
-    df, columns = split_recipe_column(df, columns)
-    
-    df = apply_initial_sort(df, args.sort_by, args.descending)
-    df = df.loc[:, columns].head(args.max_rows).copy()
-
-    html_text = build_dashboard_html(df, columns, args.title, args.subtitle)
-    Path(args.output).write_text(html_text, encoding="utf-8")
-    print(f"Saved HTML dashboard to: {args.output}")
+    output_path = render_dashboard_from_csv(
+        csv_path=args.csv,
+        output_path=args.output,
+        columns=args.columns,
+        sort_by=args.sort_by,
+        descending=args.descending,
+        max_rows=args.max_rows,
+        title=args.title,
+        subtitle=args.subtitle,
+    )
+    print(f"Saved HTML dashboard to: {output_path}")
 
 
 if __name__ == "__main__":
