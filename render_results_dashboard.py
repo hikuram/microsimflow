@@ -63,12 +63,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         default=None,
-        help="Optional output HTML file path. Defaults to the CSV path with a .html suffix."
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Overwrite the output file if it already exists."
+        help="Optional output HTML file path. If omitted, the CSV suffix is replaced with .html."
     )
     parser.add_argument("--columns", nargs="*", default=None, help="Optional list of columns to display.")
     parser.add_argument("--sort-by", default=None, help="Optional column name used for initial sorting.")
@@ -76,7 +71,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-rows", type=int, default=200, help="Maximum number of rows to include.")
     parser.add_argument("--title", default="Simulation Results Dashboard", help="Dashboard title.")
     parser.add_argument("--subtitle", default="Sortable summary with inline data bars.", help="Dashboard subtitle.")
-
     return parser.parse_args()
 
 
@@ -670,15 +664,15 @@ def drop_empty_columns(
 
 def render_dashboard_from_csv(
     csv_path: str,
-    output_path: Optional[str] = None,
+    output_path: str,
     columns: Optional[Sequence[str]] = None,
     sort_by: Optional[str] = None,
     descending: bool = False,
-    max_rows: int = 100,
+    max_rows: int = 200,
     title: str = "Simulation Results Dashboard",
     subtitle: str = "Sortable summary with inline data bars.",
     drop_empty_columns_enabled: bool = True,
-) -> Path:
+) -> None:
     """Render a self-contained HTML dashboard from a CSV file.
 
     This function is designed for direct reuse from the main pipeline.
@@ -712,50 +706,35 @@ def render_dashboard_from_csv(
     selected_columns = drop_empty_columns(
         df,
         selected_columns,
-        drop_empty_columns_enabled=drop_empty_columns_enabled,
+        drop_empty_columns_enabled=True,
     )
     df = apply_initial_sort(df, sort_by, descending)
     df = df.loc[:, selected_columns].head(max_rows).copy()
 
-    output_path_obj = resolve_output_path(csv_path, output_path)
-    if output_path_obj.exists() and not force:
-        raise FileExistsError(
-            f"Output file already exists: {output_path_obj}. "
-            f"Use force=True to overwrite it."
-        )
-
     html_text = build_dashboard_html(df, selected_columns, title, subtitle)
-    output_path_obj.write_text(html_text, encoding="utf-8")
-    return output_path_obj
-
-
-def resolve_output_path(csv_path: str, output_path: Optional[str] = None) -> Path:
-    """Resolve the dashboard output path.
-
-    If no explicit output path is given, replace the CSV suffix with .html.
-    Example:
-        results.csv -> results.html
-    """
-    csv_path_obj = Path(csv_path)
-    if output_path:
-        return Path(output_path)
-    return csv_path_obj.with_suffix(".html")
-
+    Path(output_path).write_text(html_text, encoding="utf-8")
 
 def main() -> None:
     args = parse_args()
-    output_path_obj = render_dashboard_from_csv(
+
+    output_path = args.output
+    if output_path is None:
+        output_path = str(Path(args.csv).with_suffix(".html"))
+
+    if Path(output_path).suffix.lower() != ".html":
+        raise ValueError(f"Output file must use a .html suffix: {output_path}")
+
+    render_dashboard_from_csv(
         csv_path=args.csv,
-        output_path=args.output,
+        output_path=output_path,
         columns=args.columns,
         sort_by=args.sort_by,
         descending=args.descending,
         max_rows=args.max_rows,
         title=args.title,
         subtitle=args.subtitle,
-        force=args.force,
     )
-    print(f"Saved HTML dashboard to: {output_path_obj}")
+    print(f"Saved HTML dashboard to: {output_path}")
 
 
 if __name__ == "__main__":
