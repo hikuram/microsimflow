@@ -169,10 +169,12 @@ def run_recalculation_mode(args):
         fallback_props = {0: "0.3", 1: "0.3", 2: "30.0", 3: "30.0", 4: "300.0"}
     elif args.physics_mode == 'electrical':
         fallback_props = {0: "1e-4", 1: "1e-4", 2: "1e-3", 3: "1e-1", 4: "1e4"}
-    else: # mechanics
+    else:  # mechanics
         fallback_props = {0: "3.0 1.0", 1: "3.0 1.0", 2: "10.0 3.0", 3: "15.0 5.0", 4: "100.0 50.0"}
 
-    with open(backup_path, 'r', encoding='utf-8') as f:
+    # Load the original CSV into memory.
+    # The recalculation loop updates only refreshed values, then rewrites the full CSV after each row.
+    with open(args.csv_log, 'r', encoding='utf-8') as f:
         reader = csv.reader(f)
         header = next(reader)
         rows = list(reader)
@@ -189,110 +191,112 @@ def run_recalculation_mode(args):
         print(f"Error: CSV is missing required columns ({e})")
         return
 
-    with open(args.csv_log, mode='w', newline='', encoding='utf-8') as out_f:
-        writer = csv.writer(out_f)
-        writer.writerow(header) # Write header first
+    # 2. Iterate through each model in the CSV
+    for row_idx, row in enumerate(rows):
+        basename = row[idx_basename]
+        grid_size_str = row[idx_grid_size]
+        voxel_size = float(row[idx_voxel_size])
+        mode = row[idx_mode]
 
-        # 2. Iterate through each model in the CSV
-        for row in rows:
-            basename = row[idx_basename]
-            grid_size_str = row[idx_grid_size]
-            voxel_size = float(row[idx_voxel_size])
-            mode = row[idx_mode]
+        print(f"\nRecalculating: {basename}")
 
-            print(f"\nRecalculating: {basename}")
-            
-            raw_file = f"{basename}.raw"
-            nf_file = f"{basename}.nf"
+        raw_file = f"{basename}.raw"
+        nf_file = f"{basename}.nf"
 
-            if not os.path.exists(raw_file):
-                print(f"  Skipping: {raw_file} not found.")
-                writer.writerow(row)
-                out_f.flush()
-                os.fsync(out_f.fileno())
-                continue
+        if not os.path.exists(raw_file):
+            print(f"  Skipping: {raw_file} not found.")
+            continue
 
-            # Restore grid to determine unique Phase IDs
-            dim_parts = grid_size_str.split('x')
-            nx, ny, nz = int(dim_parts[0]), int(dim_parts[1]), int(dim_parts[2])
-            final_grid = np.fromfile(raw_file, dtype=np.uint8).reshape((nz, ny, nx))
+        # Restore grid to determine unique Phase IDs
+        dim_parts = grid_size_str.split('x')
+        nx, ny, nz = int(dim_parts[0]), int(dim_parts[1]), int(dim_parts[2])
+        final_grid = np.fromfile(raw_file, dtype=np.uint8).reshape((nz, ny, nx))
 
-            # 3. Resolve Property Map (Task 5 Fix: Preserve heterogeneity)
-            prop_map = parse_nf_properties(nf_file)
-            
-            if args.overwrite_props or not prop_map:
-                print("  Updating properties from command-line arguments...")
-                cli_overrides = {0: args.prop_A, 1: args.prop_B, 2: args.prop_inter2, 3: args.prop_inter}
-                unique_ids = np.unique(final_grid)
-                
-                for uid in unique_ids:
-                    # Priority 1: User-specified CLI override
-                    if uid in cli_overrides and cli_overrides[uid] is not None:
-                        prop_map[uid] = cli_overrides[uid]
-                    # Priority 2: Keep existing .nf property if present (protects multiple filler IDs)
-                    elif uid in prop_map:
-                        continue
-                    # Priority 3: Hard fallback for missing data
-                    else:
-                        if uid in fallback_props:
-                            prop_map[uid] = fallback_props[uid]
-                        elif uid >= 4:
-                            prop_map[uid] = fallback_props[4] 
+        # 3. Resolve Property Map (Task 5 Fix: Preserve heterogeneity)
+        prop_map = parse_nf_properties(nf_file)
 
-                # Re-export .nf for chfem with corrected properties
-                export_chfem_inputs(final_grid, basename, voxel_size, mode, prop_map)
+        if args.overwrite_props or not prop_map:
+            print("  Updating properties from command-line arguments...")
+            cli_overrides = {0: args.prop_A, 1: args.prop_B, 2: args.prop_inter2, 3: args.prop_inter}
+            unique_ids = np.unique(final_grid)
 
-            # 4. Compute lightweight structure metrics directly from final_grid
-            if args.skip_structure_metrics:
-                structure_metrics = {
-                    'contact_ratio': 0.0, 'tunneling_ratio': 0.0, 'connectivity_ratio': 0.0,
-                    'n_contact_voxels': 0, 'n_tunnel_voxels': 0, 'n_filler_voxels': 0,
-                    'n_conductive_candidate_voxels': 0, 'n_largest_cluster_voxels': 0, 'n_conductive_clusters': 0,
-                }
-            else:
-                structure_metrics = compute_structure_metrics(final_grid)
-            metric_fields = structure_metrics_to_csv_fields(structure_metrics)
+            for uid in unique_ids:
+                # Priority 1: User-specified CLI override
+                if uid in cli_overrides and cli_overrides[uid] is not None:
+                    prop_map[uid] = cli_overrides[uid]
+                # Priority 2: Keep existing .nf property if present (protects multiple filler IDs)
+                elif uid in prop_map:
+                    continue
+                # Priority 3: Hard fallback for missing data
+                else:
+                    if uid in fallback_props:
+                        prop_map[uid] = fallback_props[uid]
+                    elif uid >= 4:
+                        prop_map[uid] = fallback_props[4]
 
-            # 5. Execute solvers and collect results (Task 4: Universal T-notation)
-            chfem_time = ""
-            chfem_results = [""] * 6
-            puma_time = ""
-            puma_results = [""] * 6
+            # Re-export .nf for chfem with corrected properties
+            export_chfem_inputs(final_grid, basename, voxel_size, mode, prop_map)
 
-            if args.solver in ["chfem", "both"]:
-                log_file = f"{basename}_metrics.txt"
-                subprocess.run(["chfem_exec", nf_file, raw_file, "-m", log_file])
-                res_diag, ctime = parse_chfem_log(log_file)
-                if res_diag[0] != "":
-                    chfem_time, chfem_results = f"{ctime:.2f}", res_diag
+        # 4. Compute lightweight structure metrics directly from final_grid
+        if args.skip_structure_metrics:
+            structure_metrics = {
+                'contact_ratio': 0.0, 'tunneling_ratio': 0.0, 'connectivity_ratio': 0.0,
+                'n_contact_voxels': 0, 'n_tunnel_voxels': 0, 'n_filler_voxels': 0,
+                'n_conductive_candidate_voxels': 0, 'n_largest_cluster_voxels': 0, 'n_conductive_clusters': 0,
+            }
+        else:
+            structure_metrics = compute_structure_metrics(final_grid)
+        metric_fields = structure_metrics_to_csv_fields(structure_metrics)
 
-            if args.solver in ["puma", "both"]:
-                cond_map = {k: float(v.split()[0]) for k, v in prop_map.items()} 
-                pkx, pky, pkz, ptime = run_puma_laplace(final_grid, voxel_size, mode, cond_map)
-                if pkx is not None:
-                    puma_time = f"{ptime:.2f}"
-                    puma_results = [pkx, pky, pkz, "", "", ""]
+        # 5. Execute solvers and collect results (Task 4: Universal T-notation)
+        chfem_time = ""
+        chfem_results = [""] * 6
+        puma_time = ""
+        puma_results = [""] * 6
 
-            # 6. Update the row with new metrics
-            try:
-                row[header.index("chfem_Time_s")] = chfem_time
-                row[header.index("puma_Time_s")] = puma_time
+        if args.solver in ["chfem", "both"]:
+            log_file = f"{basename}_metrics.txt"
+            subprocess.run(["chfem_exec", nf_file, raw_file, "-m", log_file])
+            res_diag, ctime = parse_chfem_log(log_file)
+            if res_diag[0] != "":
+                chfem_time, chfem_results = f"{ctime:.2f}", res_diag
 
-                # Map results to universal Txx, Tyy, Tzz, Tyz, Tzx, Txy columns
-                comp_suffixes = ["xx", "yy", "zz", "yz", "zx", "xy"]
-                for i, suffix in enumerate(comp_suffixes):
-                    col_c = f"chfem_T{suffix}"
-                    col_p = f"puma_T{suffix}"
-                    if col_c in header: row[header.index(col_c)] = chfem_results[i]
-                    if col_p in header: row[header.index(col_p)] = puma_results[i]
+        if args.solver in ["puma", "both"]:
+            cond_map = {k: float(v.split()[0]) for k, v in prop_map.items()}
+            pkx, pky, pkz, ptime = run_puma_laplace(final_grid, voxel_size, mode, cond_map)
+            if pkx is not None:
+                puma_time = f"{ptime:.2f}"
+                puma_results = [pkx, pky, pkz, "", "", ""]
 
-                for col_name, value in metric_fields.items():
-                    if col_name in header:
-                        row[header.index(col_name)] = value
-            except ValueError:
-                pass
+        # 6. Update the row with new metrics
+        try:
+            row[header.index("chfem_Time_s")] = chfem_time
+            row[header.index("puma_Time_s")] = puma_time
 
-            writer.writerow(row)
+            # Map results to universal Txx, Tyy, Tzz, Tyz, Tzx, Txy columns
+            comp_suffixes = ["xx", "yy", "zz", "yz", "zx", "xy"]
+            for i, suffix in enumerate(comp_suffixes):
+                col_c = f"chfem_T{suffix}"
+                col_p = f"puma_T{suffix}"
+                if col_c in header:
+                    row[header.index(col_c)] = chfem_results[i]
+                if col_p in header:
+                    row[header.index(col_p)] = puma_results[i]
+
+            for col_name, value in metric_fields.items():
+                if col_name in header:
+                    row[header.index(col_name)] = value
+        except ValueError:
+            pass
+
+        rows[row_idx] = row
+
+        # Persist the current CSV state after each updated row.
+        # This preserves progressive saving without rebuilding from an empty file.
+        with open(args.csv_log, mode='w', newline='', encoding='utf-8') as out_f:
+            writer = csv.writer(out_f)
+            writer.writerow(header)
+            writer.writerows(rows)
             out_f.flush()
             os.fsync(out_f.fileno())
 
