@@ -1065,26 +1065,79 @@ def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics
     return final_grid
 
 def summarize_phase_fractions(final_grid, primary_inter_id=3, secondary_inter_id=3, filler_start_id=4):
-    """Aggregate the volume fraction of each phase"""
+    """Aggregate the volume fraction of each phase."""
     total_voxels = final_grid.size
-    max_id = final_grid.max() 
+    max_id = final_grid.max()
     counts = np.bincount(final_grid.ravel(), minlength=max(filler_start_id, max_id + 1))
-    
+
     stats = {
         'polymer_a_fraction': counts[0] / total_voxels,
         'polymer_b_fraction': counts[1] / total_voxels,
         'primary_interface_fraction': counts[primary_inter_id] / total_voxels,
         'secondary_interface_fraction': counts[secondary_inter_id] / total_voxels if len(counts) > secondary_inter_id else 0.0,
     }
-    
+
     filler_total = 0
     for i in range(filler_start_id, max_id + 1):
         stats[f'filler_id{i}_fraction'] = counts[i] / total_voxels
         filler_total += counts[i] / total_voxels
-        
+
     stats['filler_total_fraction'] = filler_total
     stats['polymer_fraction'] = (counts[0] + counts[1]) / total_voxels
     return stats
+
+
+def compute_structure_metrics(final_grid, primary_inter_id=3, secondary_inter_id=2, filler_start_id=4):
+    """
+    Compute lightweight conductive structure descriptors directly from the final grid.
+
+    Definitions:
+    - contact_ratio: primary interface voxels normalized by filler voxels.
+    - tunneling_ratio: secondary interface voxels normalized by filler voxels.
+    - connectivity_ratio: largest 6-neighbor connected conductive cluster normalized by
+      all conductive candidate voxels (filler + primary + secondary interface).
+
+    These metrics are intentionally post-process descriptors derived from the final grid,
+    so they are available for both fresh builds and recalculation workflows.
+    """
+    max_id = int(final_grid.max())
+    counts = np.bincount(final_grid.ravel(), minlength=max(filler_start_id, max_id + 1))
+
+    filler_voxels = int(counts[filler_start_id:].sum()) if len(counts) > filler_start_id else 0
+    primary_voxels = int(counts[primary_inter_id]) if len(counts) > primary_inter_id else 0
+    secondary_voxels = int(counts[secondary_inter_id]) if len(counts) > secondary_inter_id else 0
+
+    conductive_mask = (final_grid >= filler_start_id)
+    conductive_mask |= (final_grid == primary_inter_id)
+    if secondary_inter_id != primary_inter_id:
+        conductive_mask |= (final_grid == secondary_inter_id)
+
+    conductive_candidate_voxels = int(np.count_nonzero(conductive_mask))
+    largest_cluster_voxels = 0
+    num_conductive_clusters = 0
+
+    if conductive_candidate_voxels > 0:
+        structure = generate_binary_structure(3, 1)
+        labeled, num_conductive_clusters = label(conductive_mask, structure=structure)
+        if num_conductive_clusters > 0:
+            cluster_sizes = np.bincount(labeled.ravel())[1:]
+            if cluster_sizes.size > 0:
+                largest_cluster_voxels = int(cluster_sizes.max())
+
+    filler_denom = float(filler_voxels) if filler_voxels > 0 else 0.0
+    conductive_denom = float(conductive_candidate_voxels) if conductive_candidate_voxels > 0 else 0.0
+
+    return {
+        'contact_ratio': (primary_voxels / filler_denom) if filler_denom > 0 else 0.0,
+        'tunneling_ratio': (secondary_voxels / filler_denom) if filler_denom > 0 else 0.0,
+        'connectivity_ratio': (largest_cluster_voxels / conductive_denom) if conductive_denom > 0 else 0.0,
+        'n_contact_voxels': primary_voxels,
+        'n_tunnel_voxels': secondary_voxels,
+        'n_filler_voxels': filler_voxels,
+        'n_conductive_candidate_voxels': conductive_candidate_voxels,
+        'n_largest_cluster_voxels': largest_cluster_voxels,
+        'n_conductive_clusters': int(num_conductive_clusters),
+    }
 
 def export_visualization_vti(final_grid, filename="microstructure.vti", voxel_size=1e-8, metadata=None):
     """
