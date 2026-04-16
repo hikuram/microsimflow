@@ -329,15 +329,18 @@ def run_puma_laplace(final_grid, voxel_size, physics_mode, cond_map):
         # Compute for each XYZ direction (specify periodic boundary conditions with side_bc='p')
         print("Computing X direction...")
         res_x = puma.compute_thermal_conductivity(ws, puma_cond_map, direction='x', side_bc='p', solver_type='cg')
-        txx = res_x[0] if isinstance(res_x, tuple) else res_x
+        k_eff_x = res_x[0] if isinstance(res_x, tuple) else res_x
+        txx = k_eff_x[0]
         
         print("Computing Y direction...")
         res_y = puma.compute_thermal_conductivity(ws, puma_cond_map, direction='y', side_bc='p', solver_type='cg')
-        tyy = res_y[0] if isinstance(res_y, tuple) else res_y
+        k_eff_y = res_y[0] if isinstance(res_y, tuple) else res_y
+        tyy = k_eff_y[1]
         
         print("Computing Z direction...")
         res_z = puma.compute_thermal_conductivity(ws, puma_cond_map, direction='z', side_bc='p', solver_type='cg')
-        tzz = res_z[0] if isinstance(res_z, tuple) else res_z
+        k_eff_z = res_z[0] if isinstance(res_z, tuple) else res_z
+        tzz = k_eff_z[2]
         
         total_time = time.time() - t0
         print(f"PuMA computation completed in {total_time:.2f}s")
