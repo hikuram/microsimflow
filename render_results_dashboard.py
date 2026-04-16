@@ -712,7 +712,7 @@ def render_dashboard_from_csv(
 
 def main() -> None:
     args = parse_args()
-    output_path = render_dashboard_from_csv(
+    render_dashboard_from_csv(
         csv_path=args.csv,
         output_path=args.output,
         columns=args.columns,
@@ -722,7 +722,7 @@ def main() -> None:
         title=args.title,
         subtitle=args.subtitle,
     )
-    print(f"Saved HTML dashboard to: {output_path}")
+    print(f"Saved HTML dashboard to: {args.output}")
 
 
 if __name__ == "__main__":
