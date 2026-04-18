@@ -591,7 +591,9 @@ def main():
         
     # Shell counter for electrical/mechanics mode (pass None for thermal)
     comp_grid = np.zeros((args.size, args.size, args.size), dtype=np.uint8)
-    shell_count_grid = np.zeros_like(comp_grid) if args.physics_mode in ['electrical', 'mechanics'] else None
+    # Initialize shell_count_grid unconditionally for all modes.
+    # In Thermal mode, this will track the Kapitza bridge regions (Secondary Interface).
+    shell_count_grid = np.zeros_like(comp_grid)
     step_logs.append(f"BG({args.bg_type}):{time.time() - t0:.1f}s")
 
     # Global placement registry for the reference configuration
