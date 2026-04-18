@@ -616,37 +616,27 @@ def apply_brush_and_write(comp_grid, backbone, radius, physics_mode='thermal', s
     fv_array = np.array(list(fiber_voxels))
     gz, gy, gx = fv_array[:, 0], fv_array[:, 1], fv_array[:, 2]
 
-    if physics_mode == 'thermal':
-        # Thermal conduction mode: Areas overlapping with existing fillers are set to penalty
-        contact_mask = (comp_grid[gz, gy, gx] >= 2)
-        comp_grid[gz[contact_mask], gy[contact_mask], gx[contact_mask]] = inter_id
-        body_mask = ~contact_mask
-        comp_grid[gz[body_mask], gy[body_mask], gx[body_mask]] = filler_id
-    else:
-        # Electrical/Mechanics mode: The main body is unconditionally maintained
-        comp_grid[gz, gy, gx] = filler_id
+    # Count the shell dilated by (tunnel_radius) voxels for ALL physics modes
+    if shell_count_grid is not None:
+        size_sh = int((radius + tunnel_radius) * 2 + 2)
+        z_sh, y_sh, x_sh = np.indices((size_sh, size_sh, size_sh))
+        cz_sh, cy_sh, cx_sh = size_sh//2, size_sh//2, size_sh//2
+        shell_brush_mask = (z_sh - cz_sh)**2 + (y_sh - cy_sh)**2 + (x_sh - cx_sh)**2 <= (radius + tunnel_radius)**2
+        local_z_sh, local_y_sh, local_x_sh = np.where(shell_brush_mask)
         
-        # Count the shell dilated by (tunnel_radius) voxels
-        if shell_count_grid is not None:
-            size_sh = int((radius + tunnel_radius) * 2 + 2)
-            z_sh, y_sh, x_sh = np.indices((size_sh, size_sh, size_sh))
-            cz_sh, cy_sh, cx_sh = size_sh//2, size_sh//2, size_sh//2
-            shell_brush_mask = (z_sh - cz_sh)**2 + (y_sh - cy_sh)**2 + (x_sh - cx_sh)**2 <= (radius + tunnel_radius)**2
-            local_z_sh, local_y_sh, local_x_sh = np.where(shell_brush_mask)
-            
-            shell_voxels = set()
-            for (z, y, x) in backbone:
-                glob_z = (local_z_sh - cz_sh + z) % shape[0]
-                glob_y = (local_y_sh - cy_sh + y) % shape[1]
-                glob_x = (local_x_sh - cx_sh + x) % shape[2]
-                for i in range(len(glob_z)):
-                    shell_voxels.add((glob_z[i], glob_y[i], glob_x[i]))
-                    
-            if shell_voxels:
-                sv_array = np.array(list(shell_voxels))
-                sz, sy, sx = sv_array[:, 0], sv_array[:, 1], sv_array[:, 2]
-                shell_count_grid[sz, sy, sx] += 1
-
+        shell_voxels = set()
+        for (z, y, x) in backbone:
+            glob_z = (local_z_sh - cz_sh + z) % shape[0]
+            glob_y = (local_y_sh - cy_sh + y) % shape[1]
+            glob_x = (local_x_sh - cx_sh + x) % shape[2]
+            for i in range(len(glob_z)):
+                shell_voxels.add((glob_z[i], glob_y[i], glob_x[i]))
+                
+        if shell_voxels:
+            sv_array = np.array(list(shell_voxels))
+            sz, sy, sx = sv_array[:, 0], sv_array[:, 1], sv_array[:, 2]
+            shell_count_grid[sz, sy, sx] += 1
+        
     return len(gz)
 
 def place_adaptive_fibers(comp_grid, tpms_grid, target_vol_frac, length, radius,
@@ -841,7 +831,7 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
                     stamp_vals = raw_stamp[coords[:, 0], coords[:, 1], coords[:, 2]].astype(np.uint8)
 
                 # Shell extraction for electrical mode
-                if not is_thermal and shell_count_grid is not None:
+                if shell_count_grid is not None:
                     rz, ry, rx = np.ogrid[-tunnel_radius:tunnel_radius+1, 
                                           -tunnel_radius:tunnel_radius+1, 
                                           -tunnel_radius:tunnel_radius+1]
@@ -874,7 +864,7 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
                 continue
 
             # Update shell count grid outside Numba using fast vectorized Numpy operations
-            if not is_thermal and shell_count_grid is not None and shell_offsets is not None:
+            if shell_count_grid is not None and shell_offsets is not None:
                 stz = (shell_offsets[:, 0] + cz) % shape[0]
                 sty = (shell_offsets[:, 1] + cy) % shape[1]
                 stx = (shell_offsets[:, 2] + cx) % shape[2]
@@ -1039,28 +1029,43 @@ def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics
             # (Primary interface voxels remain as primary_inter_id)
 
     elif physics_mode == 'thermal':
+        # --- Step 1: Base Cleanup & Restore (Existing logic) ---
         # Revert removed interface (contact penalty) to the most prevalent adjacent filler ID
         if np.any(removed_interface):
             filler_ids = np.unique(final_grid[final_grid >= filler_start_id])
-            
             if len(filler_ids) == 0:
-                # Fallback if no fillers are somehow present
                 final_grid[removed_interface] = filler_start_id
             elif len(filler_ids) == 1:
-                # Fast path for single filler type
                 final_grid[removed_interface] = filler_ids[0]
             else:
-                # Multiple filler types: count 6-neighbors for each filler ID
                 counts = []
                 for fid in filler_ids:
-                    # Convolve returns how many 'fid' voxels touch each grid point
                     c = convolve((final_grid == fid).astype(np.uint8), _NEIGHBOR6_KERNEL, mode="wrap")
                     counts.append(c[removed_interface])
-                
-                # counts array shape: (num_filler_ids, num_removed_voxels)
                 counts = np.array(counts)
                 best_idx = np.argmax(counts, axis=0)
                 final_grid[removed_interface] = filler_ids[best_idx]
+
+        # --- Step 3 & 4: Kapitza Bridge Extraction & Cleanup (New logic) ---
+        if shell_count_grid is not None:
+            # Step 3: Identify locations where dilated shells overlap.
+            # Crucial: Apply ONLY to polymer regions (final_grid < 2) to protect 
+            # already finalized filler bodies and primary overlaps.
+            kapitza_mask = (final_grid < 2) & (shell_count_grid >= 2)
+            
+            # Assign secondary interface ID (Kapitza layer)
+            final_grid[kapitza_mask] = secondary_inter_id
+            
+            # Step 4: Cleanup isolated thermal bridges (Spike removal)
+            # Removes 1-voxel floating bridges that don't connect meaningfully
+            original_kapitza_mask = (final_grid == secondary_inter_id)
+            cleaned_kapitza_mask = _remove_spikes_6n(original_kapitza_mask, min_neighbors=spike_min_neighbors)
+            cleaned_kapitza_mask = _cleanup_small_components(cleaned_kapitza_mask, min_component_size=min_interface_component_size)
+            
+            # Revert removed Kapitza voxels back to the original polymer background (TPMS)
+            removed_kapitza = original_kapitza_mask & (~cleaned_kapitza_mask)
+            if np.any(removed_kapitza):
+                final_grid[removed_kapitza] = tpms_grid[removed_kapitza]
 
     return final_grid
 
