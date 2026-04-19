@@ -589,11 +589,13 @@ def main():
         # Gyroid
         _, tpms_grid, _, actual_phaseA = build_tpms_grid_with_target_ratio(args.size, wavelength=10, target_phaseA_ratio=args.phaseA_ratio)
         
-    # Shell counter for electrical/mechanics mode (pass None for thermal)
+    # Initialize comp_grid with unsigned 8-bit integer for memory efficiency
     comp_grid = np.zeros((args.size, args.size, args.size), dtype=np.uint8)
-    # Initialize shell_count_grid unconditionally for all modes.
-    # In Thermal mode, this will track the Kapitza bridge regions (Secondary Interface).
+    
+    # Initialize shell_count_grid unconditionally for ALL modes.
+    # In Thermal mode, we will use bitwise operations on this uint8 array to track both overlaps and shells.
     shell_count_grid = np.zeros_like(comp_grid)
+    
     step_logs.append(f"BG({args.bg_type}):{time.time() - t0:.1f}s")
 
     # Global placement registry for the reference configuration
@@ -713,7 +715,9 @@ def main():
         
         # Initialize empty spaces for rigid fillers
         current_comp = np.zeros_like(current_tpms)
-        current_shell = np.zeros_like(current_tpms) if args.physics_mode in ['electrical', 'mechanics'] else None
+        
+        # Initialize shell grid unconditionally to re-render shells and overlaps during stretching
+        current_shell = np.zeros_like(current_tpms)
         
         # Redraw all rigid fillers using kinematic transformations
         render_deformed_fillers(
