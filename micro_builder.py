@@ -1,7 +1,7 @@
 import math
 import numpy as np
 from scipy.linalg import polar
-from scipy.ndimage import binary_dilation, convolve, label, generate_binary_structure, affine_transform
+from scipy.ndimage import binary_dilation, convolve, label, generate_binary_structure, affine_transform, distance_transform_edt
 from tqdm.auto import tqdm
 import pyvista as pv
 from numba import njit
@@ -593,7 +593,7 @@ def grow_adaptive_fiber(tpms_grid, comp_grid, start_pos, length, overlap_mode,
         return None
         
     return backbone
-    
+
 def apply_brush_and_write(comp_grid, backbone, radius, physics_mode='thermal', shell_count_grid=None, filler_id=4, inter_id=3, tunnel_radius=2):
     shape = comp_grid.shape
     size = int(radius * 2 + 2)
@@ -616,6 +616,22 @@ def apply_brush_and_write(comp_grid, backbone, radius, physics_mode='thermal', s
     fv_array = np.array(list(fiber_voxels))
     gz, gy, gx = fv_array[:, 0], fv_array[:, 1], fv_array[:, 2]
 
+    if physics_mode == 'thermal':
+        # Thermal mode: Identify overlap areas, but do NOT overwrite existing fillers to maintain VF.
+        contact_mask = (comp_grid[gz, gy, gx] >= 2)
+        
+        if shell_count_grid is not None:
+            # Use bitwise OR to set the highest bit (128) as the overlap flag in the uint8 array
+            shell_count_grid[gz[contact_mask], gy[contact_mask], gx[contact_mask]] |= 128
+            
+        # Write only non-overlapping bodies to protect existing VF
+        body_mask = ~contact_mask
+        comp_grid[gz[body_mask], gy[body_mask], gx[body_mask]] = filler_id
+        
+    else:
+        # Electrical/Mechanics mode: The main body is unconditionally maintained
+        comp_grid[gz, gy, gx] = filler_id
+        
     # Count the shell dilated by (tunnel_radius) voxels for ALL physics modes
     if shell_count_grid is not None:
         size_sh = int((radius + tunnel_radius) * 2 + 2)
@@ -635,8 +651,9 @@ def apply_brush_and_write(comp_grid, backbone, radius, physics_mode='thermal', s
         if shell_voxels:
             sv_array = np.array(list(shell_voxels))
             sz, sy, sx = sv_array[:, 0], sv_array[:, 1], sv_array[:, 2]
+            # Increment shell count (Secondary candidate)
             shell_count_grid[sz, sy, sx] += 1
-        
+
     return len(gz)
 
 def place_adaptive_fibers(comp_grid, tpms_grid, target_vol_frac, length, radius,
@@ -754,13 +771,13 @@ def _check_and_place_fast(comp_grid, tpms_grid, cz, cy, cx,
         new_val = stamp_vals[i]
         
         if is_thermal:
-            # Thermal mode: Overlaps become contact resistance phase (inter_id)
-            if current_val >= 2:
-                comp_grid[tz, ty, tx] = inter_id
-            else:
+            # Thermal mode: Do NOT write inter_id here.
+            # Only write filler_id where space is empty (to protect existing VF).
+            # Overlap tracking is handled in the outer Python loop.
+            if current_val < 2 and new_val > 0:
                 comp_grid[tz, ty, tx] = new_val
         else:
-            # Electrical/Mechanics mode: Write main body as a good conductor
+            # Electrical/Mechanics mode: Write main body
             if new_val > 0:
                 comp_grid[tz, ty, tx] = filler_id
                 
@@ -830,7 +847,7 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
                 else:
                     stamp_vals = raw_stamp[coords[:, 0], coords[:, 1], coords[:, 2]].astype(np.uint8)
 
-                # Shell extraction for electrical mode
+                # Extract shell for ALL modes if shell_count_grid is provided
                 if shell_count_grid is not None:
                     rz, ry, rx = np.ogrid[-tunnel_radius:tunnel_radius+1, 
                                           -tunnel_radius:tunnel_radius+1, 
@@ -863,12 +880,28 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
                 consecutive_fails += 1
                 continue
 
-            # Update shell count grid outside Numba using fast vectorized Numpy operations
-            if shell_count_grid is not None and shell_offsets is not None:
-                stz = (shell_offsets[:, 0] + cz) % shape[0]
-                sty = (shell_offsets[:, 1] + cy) % shape[1]
-                stx = (shell_offsets[:, 2] + cx) % shape[2]
-                shell_count_grid[stz, sty, stx] += 1
+            # Handle overlap tracking for Thermal mode and shell counting for all modes
+            if shell_count_grid is not None:
+                if is_thermal:
+                    # Identify where the newly placed stamp overlaps with existing fillers
+                    # We calculate global coordinates of the stamp
+                    stz_body = (stamp_offsets[:, 0] + cz) % shape[0]
+                    sty_body = (stamp_offsets[:, 1] + cy) % shape[1]
+                    stx_body = (stamp_offsets[:, 2] + cx) % shape[2]
+                    
+                    # Find voxels that were already occupied before this placement
+                    # (Note: _check_and_place_fast didn't overwrite them)
+                    contact_mask = (comp_grid[stz_body, sty_body, stx_body] >= 2)
+                    
+                    # Set the overlap flag (highest bit: 128)
+                    shell_count_grid[stz_body[contact_mask], sty_body[contact_mask], stx_body[contact_mask]] |= 128
+
+                if shell_offsets is not None:
+                    stz = (shell_offsets[:, 0] + cz) % shape[0]
+                    sty = (shell_offsets[:, 1] + cy) % shape[1]
+                    stx = (shell_offsets[:, 2] + cx) % shape[2]
+                    # Increment shell count (lower 7 bits are safe to add to)
+                    shell_count_grid[stz, sty, stx] += 1
             
             # Reset cache and fails only on success (Keep cache if it's a sphere)
             if current_geom_data.get('base_type') != 'sphere':
@@ -1029,8 +1062,8 @@ def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics
             # (Primary interface voxels remain as primary_inter_id)
 
     elif physics_mode == 'thermal':
-        # --- Step 1: Base Cleanup & Restore (Existing logic) ---
         # Revert removed interface (contact penalty) to the most prevalent adjacent filler ID
+        # (This block is kept for legacy safety)
         if np.any(removed_interface):
             filler_ids = np.unique(final_grid[final_grid >= filler_start_id])
             if len(filler_ids) == 0:
@@ -1046,26 +1079,39 @@ def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics
                 best_idx = np.argmax(counts, axis=0)
                 final_grid[removed_interface] = filler_ids[best_idx]
 
-        # --- Step 3 & 4: Kapitza Bridge Extraction & Cleanup (New logic) ---
+        # --- Evaluate Primary and Secondary Interfaces using Bitwise Flags ---
         if shell_count_grid is not None:
-            # Step 3: Identify locations where dilated shells overlap.
-            # Crucial: Apply ONLY to polymer regions (final_grid < 2) to protect 
-            # already finalized filler bodies and primary overlaps.
-            kapitza_mask = (final_grid < 2) & (shell_count_grid >= 2)
+            # 1. Evaluate Primary Interface (Core Overlap) using Distance Transform
+            # The overlap flag was stored in the highest bit (128) using bitwise OR.
+            overlap_mask = (shell_count_grid & 128) > 0
             
-            # Assign secondary interface ID (Kapitza layer)
-            final_grid[kapitza_mask] = secondary_inter_id
+            if np.any(overlap_mask):
+                # Calculate Euclidean distance from the background (non-overlap regions)
+                distance_grid = distance_transform_edt(overlap_mask)
+                
+                # Threshold for contact thickness. 
+                # 1.5 effectively removes large bulk overlaps while keeping thin contacts.
+                max_contact_thickness = 1.5 
+                
+                # Voxels within the threshold become Primary Interface
+                valid_primary_mask = overlap_mask & (distance_grid <= max_contact_thickness)
+                final_grid[valid_primary_mask] = primary_inter_id
+
+            # 2. Evaluate Secondary Interface (Kapitza Bridge)
+            # Shell counts are stored in the lower 7 bits (0-127). We extract them via bitwise AND with 127.
+            pure_shell_counts = shell_count_grid & 127
             
-            # Step 4: Cleanup isolated thermal bridges (Spike removal)
-            # Removes 1-voxel floating bridges that don't connect meaningfully
-            original_kapitza_mask = (final_grid == secondary_inter_id)
-            cleaned_kapitza_mask = _remove_spikes_6n(original_kapitza_mask, min_neighbors=spike_min_neighbors)
+            # Secondary interfaces are formed in polymer spaces (final_grid < 2) 
+            # where the pure shell count is 2 or more.
+            raw_kapitza_mask = (final_grid < 2) & (pure_shell_counts >= 2)
+            
+            # --- Apply Image Processing Cleanup ONLY to Kapitza Bridge ---
+            cleaned_kapitza_mask = raw_kapitza_mask.copy()
+            cleaned_kapitza_mask = _remove_spikes_6n(cleaned_kapitza_mask, min_neighbors=spike_min_neighbors)
             cleaned_kapitza_mask = _cleanup_small_components(cleaned_kapitza_mask, min_component_size=min_interface_component_size)
             
-            # Revert removed Kapitza voxels back to the original polymer background (TPMS)
-            removed_kapitza = original_kapitza_mask & (~cleaned_kapitza_mask)
-            if np.any(removed_kapitza):
-                final_grid[removed_kapitza] = tpms_grid[removed_kapitza]
+            # Write the stabilized Secondary Interface to the final grid
+            final_grid[cleaned_kapitza_mask] = secondary_inter_id
 
     return final_grid
 
@@ -1255,19 +1301,26 @@ def _paste_mask_to_grid(comp_grid, shell_count_grid, cz, cy, cx, mask, filler_id
     
     if is_thermal:
         contact = (comp_grid[gz, gy, gx] >= 2)
-        comp_grid[gz[contact], gy[contact], gx[contact]] = inter_id
+        
+        if shell_count_grid is not None:
+            # Set overlap flag using bitwise OR (128)
+            shell_count_grid[gz[contact], gy[contact], gx[contact]] |= 128
+            
+        # Protect existing VF
         comp_grid[gz[~contact], gy[~contact], gx[~contact]] = filler_id
     else:
         comp_grid[gz, gy, gx] = filler_id
-        if shell_count_grid is not None:
-            struct = generate_binary_structure(3, 1)
-            dilated_mask = binary_dilation(mask, structure=struct, iterations=tunnel_radius)
-            shell_coords = np.argwhere(dilated_mask)
-            sh_offsets = shell_coords - center
-            sz = (sh_offsets[:, 0] + cz) % shape[0]
-            sy = (sh_offsets[:, 1] + cy) % shape[1]
-            sx = (sh_offsets[:, 2] + cx) % shape[2]
-            shell_count_grid[sz, sy, sx] += 1
+
+    # Compute shell for all modes unconditionally
+    if shell_count_grid is not None:
+        struct = generate_binary_structure(3, 1)
+        dilated_mask = binary_dilation(mask, structure=struct, iterations=tunnel_radius)
+        shell_coords = np.argwhere(dilated_mask)
+        sh_offsets = shell_coords - center
+        sz = (sh_offsets[:, 0] + cz) % shape[0]
+        sy = (sh_offsets[:, 1] + cy) % shape[1]
+        sx = (sh_offsets[:, 2] + cx) % shape[2]
+        shell_count_grid[sz, sy, sx] += 1
 
 def _render_and_paste_kinematics(comp_grid, shell_count_grid, P_CM_new, F_mat, geom, item, is_thermal, tunnel_radius):
     """
