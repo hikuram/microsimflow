@@ -725,7 +725,6 @@ def main():
             base_shape=(args.size, args.size, args.size), 
             stretch_ratio=stretch, 
             poisson_ratio=args.poisson_ratio, 
-            is_thermal=(args.physics_mode == 'thermal'), 
             comp_grid=current_comp, 
             shell_count_grid=current_shell, 
             tunnel_radius=args.tunnel_radius
