@@ -73,7 +73,14 @@ python3 exp/run_exp4_scale_check.py     # RVE scale, spatial resolution, and com
 python3 exp/run_exp5_morphology.py      # Phase morphology effects (Lamellar, Cylinder, Gyroid, Sea-Island)
 python3 exp/run_exp6_filler.py          # Filler shape reinforcement comparison (Sphere, Flake, Fiber)
 python3 exp/run_exp7_shape_stretch.py   # Microstructure deformation under mechanical stretching
+
+# Benchmark & Verification Experiments (chfem vs PuMA)
+python3 exp/run_exp8_compare_spheres.py      # Solver comparison for spheres across varying interface profiles
+python3 exp/run_exp9_compare_fibers.py       # Solver comparison for isotropic fibers across interface profiles
+python3 exp/run_exp10_compare_orientation.py # Pseudo-orientation benchmark evaluating solver accuracy under mechanical stretch
 ```
+
+> **Note on Benchmarks (Exp 8-10):** These scripts automatically generate `PASS/FAIL` markdown reports and detailed CSV summaries. They verify the consistency between `chfem` and `PuMA` using configured log10-difference thresholds and anisotropy checks.
 
 ### 2. Plotting Results
 Once the experiments are complete and the central CSV logs are generated, you can visualize the trends and extract structural insights using the included plotting scripts:
@@ -87,6 +94,9 @@ python3 exp/plot_exp4_scale_check.py
 python3 exp/plot_exp5_morphology.py
 python3 exp/plot_exp6_filler.py
 python3 exp/plot_exp7_shape_stretch.py
+python3 exp/plot_exp8_compare_spheres.py
+python3 exp/plot_exp9_compare_fibers.py
+python3 exp/plot_exp10_compare_orientation.py
 ```
 
 **What these scripts generate:**
