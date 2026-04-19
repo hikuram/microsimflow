@@ -616,22 +616,17 @@ def apply_brush_and_write(comp_grid, backbone, radius, physics_mode='thermal', s
     fv_array = np.array(list(fiber_voxels))
     gz, gy, gx = fv_array[:, 0], fv_array[:, 1], fv_array[:, 2]
 
-    if physics_mode == 'thermal':
-        # Thermal mode: Identify overlap areas, but do NOT overwrite existing fillers to maintain VF.
-        contact_mask = (comp_grid[gz, gy, gx] >= 2)
+    # Thermal mode: Identify overlap areas, but do NOT overwrite existing fillers to maintain VF.
+    contact_mask = (comp_grid[gz, gy, gx] >= 2)
+    
+    if shell_count_grid is not None:
+        # Use bitwise OR to set the highest bit (128) as the overlap flag in the uint8 array
+        shell_count_grid[gz[contact_mask], gy[contact_mask], gx[contact_mask]] |= 128
         
-        if shell_count_grid is not None:
-            # Use bitwise OR to set the highest bit (128) as the overlap flag in the uint8 array
-            shell_count_grid[gz[contact_mask], gy[contact_mask], gx[contact_mask]] |= 128
-            
-        # Write only non-overlapping bodies to protect existing VF
-        body_mask = ~contact_mask
-        comp_grid[gz[body_mask], gy[body_mask], gx[body_mask]] = filler_id
-        
-    else:
-        # Electrical/Mechanics mode: The main body is unconditionally maintained
-        comp_grid[gz, gy, gx] = filler_id
-        
+    # Write only non-overlapping bodies to protect existing VF
+    body_mask = ~contact_mask
+    comp_grid[gz[body_mask], gy[body_mask], gx[body_mask]] = filler_id
+
     # Count the shell dilated by (tunnel_radius) voxels for ALL physics modes
     if shell_count_grid is not None:
         size_sh = int((radius + tunnel_radius) * 2 + 2)
@@ -730,7 +725,7 @@ def place_adaptive_fibers(comp_grid, tpms_grid, target_vol_frac, length, radius,
 @njit
 def _check_and_place_fast(comp_grid, tpms_grid, cz, cy, cx, 
                           stamp_offsets, stamp_vals, current_protrusion_limit, 
-                          overlap_mode, is_thermal, filler_id, inter_id):
+                          overlap_mode, filler_id, inter_id):
     """
     Numba-optimized JIT compiled function.
     Performs boundary checks, collision detection, and voxel writing without Python loop overhead.
@@ -770,17 +765,11 @@ def _check_and_place_fast(comp_grid, tpms_grid, cz, cy, cx,
         current_val = comp_grid[tz, ty, tx]
         new_val = stamp_vals[i]
         
-        if is_thermal:
-            # Thermal mode: Do NOT write inter_id here.
-            # Only write filler_id where space is empty (to protect existing VF).
-            # Overlap tracking is handled in the outer Python loop.
-            if current_val < 2 and new_val > 0:
-                comp_grid[tz, ty, tx] = new_val
-        else:
-            # Electrical/Mechanics mode: Write main body
-            if new_val > 0:
-                comp_grid[tz, ty, tx] = filler_id
-                
+        # Only write filler_id where space is empty (to protect existing VF).
+        # Overlap tracking is handled in the outer Python loop.
+        if current_val < 2 and new_val > 0:
+            comp_grid[tz, ty, tx] = new_val
+
     return True
 
 def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_frac,
@@ -811,8 +800,6 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
 
     if 'physics_mode' not in kwargs:
         kwargs['physics_mode'] = physics_mode
-        
-    is_thermal = (physics_mode == 'thermal')
 
     with tqdm(total=target_voxels, desc=desc, unit="voxel") as pbar:
         while placed_voxels < initial_placed + target_voxels and attempts < max_attempts:
@@ -872,7 +859,7 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
             success = _check_and_place_fast(
                 comp_grid, tpms_grid, cz, cy, cx, 
                 stamp_offsets, stamp_vals, current_protrusion_limit, 
-                overlap_mode, is_thermal, filler_id, inter_id
+                overlap_mode, filler_id, inter_id
             )
 
             if not success:
@@ -882,19 +869,18 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
 
             # Handle overlap tracking for Thermal mode and shell counting for all modes
             if shell_count_grid is not None:
-                if is_thermal:
-                    # Identify where the newly placed stamp overlaps with existing fillers
-                    # We calculate global coordinates of the stamp
-                    stz_body = (stamp_offsets[:, 0] + cz) % shape[0]
-                    sty_body = (stamp_offsets[:, 1] + cy) % shape[1]
-                    stx_body = (stamp_offsets[:, 2] + cx) % shape[2]
-                    
-                    # Find voxels that were already occupied before this placement
-                    # (Note: _check_and_place_fast didn't overwrite them)
-                    contact_mask = (comp_grid[stz_body, sty_body, stx_body] >= 2)
-                    
-                    # Set the overlap flag (highest bit: 128)
-                    shell_count_grid[stz_body[contact_mask], sty_body[contact_mask], stx_body[contact_mask]] |= 128
+                # Identify where the newly placed stamp overlaps with existing fillers
+                # We calculate global coordinates of the stamp
+                stz_body = (stamp_offsets[:, 0] + cz) % shape[0]
+                sty_body = (stamp_offsets[:, 1] + cy) % shape[1]
+                stx_body = (stamp_offsets[:, 2] + cx) % shape[2]
+                
+                # Find voxels that were already occupied before this placement
+                # (Note: _check_and_place_fast didn't overwrite them)
+                contact_mask = (comp_grid[stz_body, sty_body, stx_body] >= 2)
+                
+                # Set the overlap flag (highest bit: 128)
+                shell_count_grid[stz_body[contact_mask], sty_body[contact_mask], stx_body[contact_mask]] |= 128
 
                 if shell_offsets is not None:
                     stz = (shell_offsets[:, 0] + cz) % shape[0]
@@ -1013,8 +999,8 @@ def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics
     final_grid = np.where(comp_grid > 0, comp_grid, tpms_grid).astype(np.uint8)
 
     if physics_mode in ['electrical', 'mechanics'] and shell_count_grid is not None:
-        # Base interface extraction using primary_inter_id temporarily for the unified interface
-        tunnel_mask = (shell_count_grid >= 2) & (final_grid < filler_start_id)
+        pure_shell_counts = shell_count_grid & 127
+        tunnel_mask = (pure_shell_counts >= 2) & (final_grid < filler_start_id)
         final_grid[tunnel_mask] = primary_inter_id
 
     # --- Common Interface Cleanup ---
@@ -1286,7 +1272,7 @@ def _transform_fiber_kinematics(local_bb, lam, lam_nu):
     new_bb += (start_anchor - new_bb[0])
     return new_bb
 
-def _paste_mask_to_grid(comp_grid, shell_count_grid, cz, cy, cx, mask, filler_id, inter_id, is_thermal, tunnel_radius):
+def _paste_mask_to_grid(comp_grid, shell_count_grid, cz, cy, cx, mask, filler_id, inter_id, tunnel_radius):
     """Helper to paste a generic boolean mask (flakes/spheres) into the grid"""
     shape = comp_grid.shape
     coords = np.argwhere(mask > 0)
@@ -1298,18 +1284,15 @@ def _paste_mask_to_grid(comp_grid, shell_count_grid, cz, cy, cx, mask, filler_id
     gz = (offsets[:, 0] + cz) % shape[0]
     gy = (offsets[:, 1] + cy) % shape[1]
     gx = (offsets[:, 2] + cx) % shape[2]
+
+    contact = (comp_grid[gz, gy, gx] >= 2)
     
-    if is_thermal:
-        contact = (comp_grid[gz, gy, gx] >= 2)
+    if shell_count_grid is not None:
+        # Set overlap flag using bitwise OR (128)
+        shell_count_grid[gz[contact], gy[contact], gx[contact]] |= 128
         
-        if shell_count_grid is not None:
-            # Set overlap flag using bitwise OR (128)
-            shell_count_grid[gz[contact], gy[contact], gx[contact]] |= 128
-            
-        # Protect existing VF
-        comp_grid[gz[~contact], gy[~contact], gx[~contact]] = filler_id
-    else:
-        comp_grid[gz, gy, gx] = filler_id
+    # Protect existing VF
+    comp_grid[gz[~contact], gy[~contact], gx[~contact]] = filler_id
 
     # Compute shell for all modes unconditionally
     if shell_count_grid is not None:
@@ -1322,7 +1305,7 @@ def _paste_mask_to_grid(comp_grid, shell_count_grid, cz, cy, cx, mask, filler_id
         sx = (sh_offsets[:, 2] + cx) % shape[2]
         shell_count_grid[sz, sy, sx] += 1
 
-def _render_and_paste_kinematics(comp_grid, shell_count_grid, P_CM_new, F_mat, geom, item, is_thermal, tunnel_radius):
+def _render_and_paste_kinematics(comp_grid, shell_count_grid, P_CM_new, F_mat, geom, item, tunnel_radius):
     """
     Dynamically renders transformed local kinematics into a tight bounding box,
     drastically reducing memory overhead and preserving exact rigid-body volume.
@@ -1428,9 +1411,9 @@ def _render_and_paste_kinematics(comp_grid, shell_count_grid, P_CM_new, F_mat, g
     new_cy = int(round(target_center_global[1])) % new_shape[1]
     new_cx = int(round(target_center_global[2])) % new_shape[2]
 
-    _paste_mask_to_grid(comp_grid, shell_count_grid, new_cz, new_cy, new_cx, cropped, item['filler_id'], item['inter_id'], is_thermal, tunnel_radius)
+    _paste_mask_to_grid(comp_grid, shell_count_grid, new_cz, new_cy, new_cx, cropped, item['filler_id'], item['inter_id'], tunnel_radius)
 
-def render_deformed_fillers(placement_registry, base_shape, stretch_ratio, poisson_ratio, is_thermal, comp_grid, shell_count_grid, tunnel_radius=2):
+def render_deformed_fillers(placement_registry, base_shape, stretch_ratio, poisson_ratio, comp_grid, shell_count_grid, tunnel_radius=2):
     """Renders rigid fillers into the deformed configuration."""
     lam = stretch_ratio
     lam_nu = stretch_ratio ** (-poisson_ratio)
@@ -1455,7 +1438,7 @@ def render_deformed_fillers(placement_registry, base_shape, stretch_ratio, poiss
             new_cy = int(round(target[1])) % new_shape[1]
             new_cx = int(round(target[2])) % new_shape[2]
             mask, _ = get_sphere_mask(geom['radius'])
-            _paste_mask_to_grid(comp_grid, shell_count_grid, new_cz, new_cy, new_cx, mask, item['filler_id'], item['inter_id'], is_thermal, tunnel_radius)
+            _paste_mask_to_grid(comp_grid, shell_count_grid, new_cz, new_cy, new_cx, mask, item['filler_id'], item['inter_id'], tunnel_radius)
         else:
             # Route all complex kinematics to the unified dynamic bounding box renderer
-            _render_and_paste_kinematics(comp_grid, shell_count_grid, P_CM_new, F_mat, geom, item, is_thermal, tunnel_radius)
+            _render_and_paste_kinematics(comp_grid, shell_count_grid, P_CM_new, F_mat, geom, item, tunnel_radius)
