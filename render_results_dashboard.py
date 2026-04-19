@@ -49,7 +49,9 @@ DEFAULT_COLUMN_CANDIDATES: List[str] = [
     "puma_Time_s",
 ]
 
-LINEAR_BAR_KEYWORDS: Tuple[str, ...] = ("ratio", "frac", "time")
+# Keyword classifications for data bar behavior
+FIXED_BAR_KEYWORDS: Tuple[str, ...] = ("frac",)
+LINEAR_BAR_KEYWORDS: Tuple[str, ...] = ("ratio", "time")
 LOG_BAR_KEYWORDS: Tuple[str, ...] = ("txx", "tyy", "tzz", "txy", "tyz", "tzx")
 COUNT_BAR_KEYWORDS: Tuple[str, ...] = ("voxels", "clusters", "n_")
 CATEGORICAL_KEYWORDS: Tuple[str, ...] = ("model", "recipe", "solver", "type", "mode", "grid_size")
@@ -68,7 +70,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--columns", nargs="*", default=None, help="Optional list of columns to display.")
     parser.add_argument("--sort-by", default=None, help="Optional column name used for initial sorting.")
     parser.add_argument("--descending", action="store_true", help="Use descending order for the initial sort.")
-    parser.add_argument("--max-rows", type=int, default=200, help="Maximum number of rows to include.")
+    parser.add_argument("--max-rows", type=int, default=2000, help="Maximum number of rows to include.")
     parser.add_argument("--title", default="Simulation Results Dashboard", help="Dashboard title.")
     parser.add_argument("--subtitle", default="Sortable summary with inline data bars.", help="Dashboard subtitle.")
     return parser.parse_args()
@@ -123,8 +125,12 @@ def classify_bar_attributes(column_name: str) -> Optional[Tuple[str, str]]:
         return ("log", "count")
     if any(k in lower for k in LOG_BAR_KEYWORDS):
         return ("log", "tensor")
+    if any(k in lower for k in FIXED_BAR_KEYWORDS):
+        return ("fixed", "fraction")
     if any(k in lower for k in LINEAR_BAR_KEYWORDS):
-        return ("linear", "ratio")
+        # Time and Ratios use linear scaling but we map time to the count theme for color variety
+        theme = "count" if "time" in lower else "ratio"
+        return ("linear", theme)
     return None
 
 
@@ -140,7 +146,7 @@ def deterministic_color_index(text: str, max_colors: int = 5) -> int:
 
 def is_ratio_like(column_name: str) -> bool:
     lower_name = column_name.lower()
-    return "ratio" in lower_name or "fraction" in lower_name or lower_name.startswith("vf")
+    return "ratio" in lower_name or "fraction" in lower_name or "frac" in lower_name or lower_name.startswith("vf")
 
 
 def format_value(value: object, column_name: str) -> str:
@@ -148,6 +154,8 @@ def format_value(value: object, column_name: str) -> str:
         return ""
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         lower_col = column_name.lower()
+        if "time" in lower_col:
+            return f"{value:.2f}s"
         if any(k in lower_col for k in COUNT_BAR_KEYWORDS):
             return f"{int(float(value)):,}"
         if is_ratio_like(column_name):
@@ -168,6 +176,13 @@ def format_value(value: object, column_name: str) -> str:
 
 def build_bar_normalizer(series: pd.Series, mode: str):
     """Create a normalization function (0.0 to 1.0) for inline data bars."""
+    if mode == "fixed":
+        # Fixed 0.0 to 1.0 scale, immune to min/max of the current dataset
+        def normalize_fixed(value: object) -> Optional[float]:
+            if pd.isna(value): return None
+            return max(0.0, min(1.0, float(value)))
+        return normalize_fixed
+
     valid = series.dropna()
     if valid.empty:
         return lambda _: None
@@ -181,21 +196,22 @@ def build_bar_normalizer(series: pd.Series, mode: str):
         hi = float(log_values.max())
         if math.isclose(lo, hi):
             return lambda value: 1.0 if pd.notna(value) and float(value) > 0 else None
-        def normalize(value: object) -> Optional[float]:
+        def normalize_log(value: object) -> Optional[float]:
             if pd.isna(value): return None
             value_f = float(value)
             if value_f <= 0: return None
             return max(0.0, min(1.0, (math.log10(value_f) - lo) / (hi - lo)))
-        return normalize
+        return normalize_log
 
+    # Linear mode
     lo = float(valid.min())
     hi = float(valid.max())
     if math.isclose(lo, hi):
         return lambda value: 1.0 if pd.notna(value) else None
-    def normalize(value: object) -> Optional[float]:
+    def normalize_linear(value: object) -> Optional[float]:
         if pd.isna(value): return None
         return max(0.0, min(1.0, (float(value) - lo) / (hi - lo)))
-    return normalize
+    return normalize_linear
 
 
 def prepare_bar_metadata(df: pd.DataFrame, columns: Sequence[str]) -> Dict[str, Tuple[str, str, object]]:
@@ -220,17 +236,17 @@ def make_header_html(columns: Sequence[str], numeric_cols: List[str], bar_metada
         if has_bar:
             align_class = "th-num"
             base_class = ""
-            style = "width: 150px; min-width: 150px; max-width: 150px;"
+            style = "width: 140px; min-width: 140px; max-width: 140px;"
             resizer_html = ""
         elif is_num:
             align_class = "th-num"
             base_class = ""
-            style = "width: 100px; min-width: 100px; max-width: 100px;"
+            style = "width: 90px; min-width: 90px; max-width: 90px;"
             resizer_html = ""
         else:
             align_class = "th-text"
             base_class = "resizable-th"
-            style = "width: 50px; min-width: 50px; max-width: 50px;"
+            style = "width: 45px; min-width: 45px; max-width: 45px;"
             resizer_html = '<div class="resizer" title="Drag to resize"></div>'
             
         header_cells.append(
@@ -344,10 +360,11 @@ def build_dashboard_html(df: pd.DataFrame, columns: Sequence[str], title: str, s
   --sticky-hover: #192336;
   --sticky-border: #3b4b6b;
 
-  /* Data Bar Gradients */
-  --bar-ratio: linear-gradient(90deg, rgba(126,224,195,0.55), rgba(102,179,255,0.45));
-  --bar-tensor: linear-gradient(90deg, rgba(199,126,224,0.55), rgba(255,102,179,0.45));
-  --bar-count: linear-gradient(90deg, rgba(224,195,126,0.55), rgba(255,179,102,0.45));
+  /* Data Bar Gradients (4 Colors) */
+  --bar-fraction: linear-gradient(90deg, rgba(80,200,120,0.55), rgba(46,139,87,0.45)); /* Green */
+  --bar-ratio: linear-gradient(90deg, rgba(102,179,255,0.55), rgba(50,120,200,0.45)); /* Blue */
+  --bar-tensor: linear-gradient(90deg, rgba(199,126,224,0.55), rgba(255,102,179,0.45)); /* Purple */
+  --bar-count: linear-gradient(90deg, rgba(255,179,102,0.55), rgba(220,130,50,0.45)); /* Orange */
   
   /* Categorical Badge Palettes */
   --badge-0-bg: rgba(102,179,255,0.15); --badge-0-fg: #66b3ff; --badge-0-border: rgba(102,179,255,0.3);
@@ -375,9 +392,10 @@ def build_dashboard_html(df: pd.DataFrame, columns: Sequence[str], title: str, s
   --sticky-border: #adb5bd;
 
   /* CVD Friendly Data Bar Gradients (Okabe-Ito inspired) */
-  --bar-ratio: linear-gradient(90deg, rgba(86,180,233,0.4), rgba(0,158,115,0.4));
-  --bar-tensor: linear-gradient(90deg, rgba(204,121,167,0.4), rgba(0,114,178,0.4));
-  --bar-count: linear-gradient(90deg, rgba(240,228,66,0.6), rgba(213,94,0,0.4));
+  --bar-fraction: linear-gradient(90deg, rgba(0,158,115,0.5), rgba(0,110,80,0.4)); /* Bluish Green */
+  --bar-ratio: linear-gradient(90deg, rgba(86,180,233,0.5), rgba(0,114,178,0.4)); /* Sky Blue */
+  --bar-tensor: linear-gradient(90deg, rgba(204,121,167,0.5), rgba(180,90,140,0.4)); /* Reddish Purple */
+  --bar-count: linear-gradient(90deg, rgba(240,228,66,0.6), rgba(213,94,0,0.4)); /* Yellow to Vermillion */
 
   /* CVD Friendly Badge Palettes (Okabe-Ito inspired) */
   --badge-0-bg: rgba(86, 180, 233, 0.15); --badge-0-fg: #0072B2; --badge-0-border: #56B4E9; /* Sky Blue */
@@ -478,19 +496,23 @@ th.sorted-desc .sort-indicator::after {{ content: "▼"; }}
 
 /* Components */
 .bar-shell {{
-  position: relative; width: 100%; height: 24px; border-radius: 6px;
-  overflow: hidden; background: rgba(128,128,128,0.1); border: 1px solid rgba(128,128,128,0.2);
+  position: relative; width: 100%; height: 24px; border-radius: 4px;
+  overflow: hidden; background: rgba(128,128,128,0.08); border: 1px solid rgba(128,128,128,0.15);
 }}
-.bar-fill {{ position: absolute; inset: 0 auto 0 0; border-radius: 0px; }}
+.bar-fill {{ 
+  position: absolute; inset: 0 auto 0 0; border-radius: 0px; 
+  border-right: 1px solid rgba(255,255,255,0.1);
+}}
+.bar-fraction {{ background: var(--bar-fraction); }}
 .bar-ratio {{ background: var(--bar-ratio); }}
 .bar-tensor {{ background: var(--bar-tensor); }}
 .bar-count {{ background: var(--bar-count); }}
 .bar-label {{
   position: relative; z-index: 1; display: flex; align-items: center; justify-content: flex-end;
   width: 100%; height: 100%; padding: 0 10px; font-size: 12px; font-variant-numeric: tabular-nums;
-  text-shadow: 0 1px 2px rgba(255,255,255,0.1);
+  text-shadow: 0 1px 2px rgba(255,255,255,0.2);
 }}
-[data-theme="dark"] .bar-label {{ text-shadow: 0 1px 2px rgba(0,0,0,0.5); }}
+[data-theme="dark"] .bar-label {{ text-shadow: 0 1px 2px rgba(0,0,0,0.6); }}
 
 .badge {{
   display: inline-block; padding: 3px 8px; border-radius: 12px; font-size: 11px;
@@ -668,7 +690,7 @@ def render_dashboard_from_csv(
     columns: Optional[Sequence[str]] = None,
     sort_by: Optional[str] = None,
     descending: bool = False,
-    max_rows: int = 200,
+    max_rows: int = 2000,
     title: str = "Simulation Results Dashboard",
     subtitle: str = "Sortable summary with inline data bars.",
     drop_empty_columns_enabled: bool = True,
