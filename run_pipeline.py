@@ -413,8 +413,14 @@ def run_puma_elasticity(final_grid, voxel_size, prop_map):
 
     for uid in ws_unique_ids:
         uid_int = int(uid)
-        prop_val = prop_map.get(uid_int, prop_map.get(0))
-        
+
+        if uid_int not in prop_map:
+            raise KeyError(
+                f"Phase ID {uid_int} is missing in prop_map. "
+                f"Please define the mechanics property as 'E nu' for this phase before running PuMA elasticity."
+            )
+
+        prop_val = prop_map[uid_int]
         young_modulus, poisson_ratio = parse_mechanics_property(prop_val)
         puma_elast_map.add_isotropic_material((uid_int, uid_int), young_modulus, poisson_ratio)
         print(f"  -> Mapped ID {uid_int}: E={young_modulus:.2f}, nu={poisson_ratio:.3f}")
