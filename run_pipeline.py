@@ -400,16 +400,24 @@ def run_puma_elasticity(final_grid, voxel_size, prop_map):
         print("Error: pumapy module not found. Cannot run PuMA solver.")
         return [None] * 6, 0.0
 
+
     puma_elast = get_puma_elasticity_namespace(puma)
 
-    # Transpose dimensions: NumPy (Z, Y, X) -> PuMA Workspace (X, Y, Z)
-    ws = puma.Workspace.from_array(final_grid.transpose(2, 1, 0))
+    grid_c = final_grid.transpose(2, 1, 0).astype(np.uint16).copy(order='C')
+    ws = puma.Workspace.from_array(grid_c)
     ws.voxel_length = voxel_size
 
     puma_elast_map = puma_elast.ElasticityMap()
-    for phase_id, prop_val in prop_map.items():
+    ws_unique_ids = np.unique(ws.matrix)
+    print(f"\n[PuMA Elasticity] Workspace unique IDs: {ws_unique_ids}")
+
+    for uid in ws_unique_ids:
+        uid_int = int(uid)
+        prop_val = prop_map.get(uid_int, prop_map.get(0))
+        
         young_modulus, poisson_ratio = parse_mechanics_property(prop_val)
-        puma_elast_map.add_isotropic_material((int(phase_id), int(phase_id)), young_modulus, poisson_ratio)
+        puma_elast_map.add_isotropic_material((uid_int, uid_int), young_modulus, poisson_ratio)
+        print(f"  -> Mapped ID {uid_int}: E={young_modulus:.2f}, nu={poisson_ratio:.3f}")
 
     directions = ['x', 'y', 'z', 'yz', 'xz', 'xy']
     effective_matrix = np.zeros((6, 6), dtype=float)
