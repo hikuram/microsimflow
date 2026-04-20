@@ -171,8 +171,11 @@ def main():
     ax1 = plt.gca()
     ax2 = ax1.twiny()
     ax2.set_xlim(ax1.get_xlim())
-    ax2.set_xticks(ax1.get_xticks())
-    ax2.set_xticklabels([f"{8.0 - x:.1f}" for x in ax1.get_xticks()])
+    ticks = ax1.get_xticks()
+    xmin, xmax = ax1.get_xlim()
+    valid_ticks = [t for t in ticks if xmin <= t <= xmax]
+    ax2.set_xticks(valid_ticks)
+    ax2.set_xticklabels([f"{8.0 - x:.1f}" for x in valid_ticks])
     ax2.set_xlabel('Fiber Volume Fraction (%)')
 
     ax1.grid(True, which="both", ls="--", alpha=0.5)

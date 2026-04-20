@@ -321,6 +321,9 @@ def run_puma_laplace(final_grid, voxel_size, physics_mode, cond_map):
     puma_cond_map = puma.IsotropicConductivityMap()
     for phase_id, cond_val in cond_map.items():
         puma_cond_map.add_material((int(phase_id), int(phase_id)), float(cond_val))
+    puma_side_bc = "p"
+    puma_solver_type = "cg"
+    puma_maxiter = 20000
 
     print("\n--- Running PuMA Solver ---")
     t0 = time.time()
@@ -328,16 +331,28 @@ def run_puma_laplace(final_grid, voxel_size, physics_mode, cond_map):
     try:
         # Compute for each XYZ direction (specify periodic boundary conditions with side_bc='p')
         print("Computing X direction...")
-        res_x = puma.compute_thermal_conductivity(ws, puma_cond_map, direction='x', side_bc='p', solver_type='cg')
-        txx = res_x[0] if isinstance(res_x, tuple) else res_x
+        res_x = puma.compute_thermal_conductivity(
+            ws, puma_cond_map, direction='x',
+            side_bc=puma_side_bc, solver_type=puma_solver_type, maxiter=puma_maxiter
+        )
+        k_eff_x = res_x[0] if isinstance(res_x, tuple) else res_x
+        txx = k_eff_x[0]
         
         print("Computing Y direction...")
-        res_y = puma.compute_thermal_conductivity(ws, puma_cond_map, direction='y', side_bc='p', solver_type='cg')
-        tyy = res_y[0] if isinstance(res_y, tuple) else res_y
+        res_y = puma.compute_thermal_conductivity(
+            ws, puma_cond_map, direction='y',
+            side_bc=puma_side_bc, solver_type=puma_solver_type, maxiter=puma_maxiter
+        )
+        k_eff_y = res_y[0] if isinstance(res_y, tuple) else res_y
+        tyy = k_eff_y[1]
         
         print("Computing Z direction...")
-        res_z = puma.compute_thermal_conductivity(ws, puma_cond_map, direction='z', side_bc='p', solver_type='cg')
-        tzz = res_z[0] if isinstance(res_z, tuple) else res_z
+        res_z = puma.compute_thermal_conductivity(
+            ws, puma_cond_map, direction='z',
+            side_bc=puma_side_bc, solver_type=puma_solver_type, maxiter=puma_maxiter
+        )
+        k_eff_z = res_z[0] if isinstance(res_z, tuple) else res_z
+        tzz = k_eff_z[2]
         
         total_time = time.time() - t0
         print(f"PuMA computation completed in {total_time:.2f}s")
@@ -586,9 +601,13 @@ def main():
         # Gyroid
         _, tpms_grid, _, actual_phaseA = build_tpms_grid_with_target_ratio(args.size, wavelength=10, target_phaseA_ratio=args.phaseA_ratio)
         
-    # Shell counter for electrical/mechanics mode (pass None for thermal)
+    # Initialize comp_grid with unsigned 8-bit integer for memory efficiency
     comp_grid = np.zeros((args.size, args.size, args.size), dtype=np.uint8)
-    shell_count_grid = np.zeros_like(comp_grid) if args.physics_mode in ['electrical', 'mechanics'] else None
+    
+    # Initialize shell_count_grid unconditionally for ALL modes.
+    # In Thermal mode, we will use bitwise operations on this uint8 array to track both overlaps and shells.
+    shell_count_grid = np.zeros_like(comp_grid)
+    
     step_logs.append(f"BG({args.bg_type}):{time.time() - t0:.1f}s")
 
     # Global placement registry for the reference configuration
@@ -708,7 +727,9 @@ def main():
         
         # Initialize empty spaces for rigid fillers
         current_comp = np.zeros_like(current_tpms)
-        current_shell = np.zeros_like(current_tpms) if args.physics_mode in ['electrical', 'mechanics'] else None
+        
+        # Initialize shell grid unconditionally to re-render shells and overlaps during stretching
+        current_shell = np.zeros_like(current_tpms)
         
         # Redraw all rigid fillers using kinematic transformations
         render_deformed_fillers(
@@ -716,7 +737,6 @@ def main():
             base_shape=(args.size, args.size, args.size), 
             stretch_ratio=stretch, 
             poisson_ratio=args.poisson_ratio, 
-            is_thermal=(args.physics_mode == 'thermal'), 
             comp_grid=current_comp, 
             shell_count_grid=current_shell, 
             tunnel_radius=args.tunnel_radius
