@@ -174,11 +174,11 @@ def run_recalculation_mode(args):
 
     # Fallback properties from command-line arguments (used if .nf is missing or new IDs found)
     if args.physics_mode == 'thermal':
-        fallback_props = {0: "0.3", 1: "0.3", 2: "30.0", 3: "30.0", 4: "300.0"}
+        fallback_props = {0: "0.3", 1: "0.3", 2: "3.0", 3: "30.0", 4: "300.0"}
     elif args.physics_mode == 'electrical':
         fallback_props = {0: "1e-4", 1: "1e-4", 2: "1e-3", 3: "1e-1", 4: "1e4"}
     else:  # mechanics
-        fallback_props = {0: "3.0 1.0", 1: "3.0 1.0", 2: "10.0 3.0", 3: "15.0 5.0", 4: "100.0 50.0"}
+        fallback_props = {0: "1.0 0.35", 1: "1.0 0.35", 2: "10.0 0.30", 3: "100.0 0.25", 4: "1000.0 0.20"}
 
     # Load the original CSV into memory.
     # The recalculation loop updates only refreshed values, then rewrites the full CSV after each row.
@@ -638,7 +638,7 @@ def main():
     if args.physics_mode == 'thermal':
         prop_A = args.prop_A or "0.3"
         prop_B = args.prop_B or "0.3"
-        prop_secondary_inter = args.prop_inter2 or "30.0" # Safe fallback even if not present in grid
+        prop_secondary_inter = args.prop_inter2 or "3.0"
         prop_primary_inter = args.prop_inter or "30.0"
         default_filler = "300.0"
     elif args.physics_mode == 'electrical':
@@ -648,11 +648,11 @@ def main():
         prop_primary_inter = args.prop_inter or "1e-1"
         default_filler = "1e4"
     else: # mechanics
-        prop_A = args.prop_A or "3.0 1.0"
-        prop_B = args.prop_B or "3.0 1.0"
-        prop_secondary_inter = args.prop_inter2 or "10.0 3.0"
-        prop_primary_inter = args.prop_inter or "15.0 5.0"
-        default_filler = "100.0 50.0"
+        prop_A = args.prop_A or "1.0 0.35"
+        prop_B = args.prop_B or "1.0 0.35"
+        prop_secondary_inter = args.prop_inter2 or "10.0 0.30"
+        prop_primary_inter = args.prop_inter or "100.0 0.25"
+        default_filler = "1000.0 0.20"
 
     # Count valid recipes
     valid_recipes = [r for r in args.recipe if float(r.split(':')[1]) > 0]
