@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 
 # PuMA backend settings
 # Keep these as in-script settings instead of exposing additional CLI arguments.
-PUMA_ELASTICITY_METHOD = "fv"
+PUMA_ELASTICITY_METHOD = "fe"
 PUMA_ELASTICITY_FV_SOLVER = "bicgstab"
 PUMA_ELASTICITY_FE_SOLVER = "minres"
 PUMA_ELASTICITY_SIDE_BC = "p"
