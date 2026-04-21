@@ -1,18 +1,12 @@
 import math
+
 import numpy as np
-from scipy.linalg import polar
-from scipy.ndimage import binary_dilation, convolve, label, generate_binary_structure, affine_transform, distance_transform_edt
-from tqdm.auto import tqdm
-import pyvista as pv
 from numba import njit
+from scipy.linalg import polar
+from scipy.ndimage import affine_transform, binary_dilation, generate_binary_structure
+from tqdm.auto import tqdm
 
-# --- Initialize global random number generator ---
-rng = np.random.default_rng()
-
-def set_random_seed(seed):
-    """Reinitialize the generator by fixing the seed externally"""
-    global rng
-    rng = np.random.default_rng(seed)
+from . import builder
     
 def crop_mask_to_bbox(mask):
     """Trim the margins of the mask and crop it with a bounding box"""
@@ -45,108 +39,80 @@ def crop_and_standardize(mask, cm_global_abs):
     
     return cropped_mask, offset_center_to_cm
 
+
 # =========================================================
-# A. Background Phase (Polymer Matrix) Generation Module
+# Mathematical Utilities for Kinematics & Orientation
 # =========================================================
 
-def build_single_phase_grid(grid_size):
-    """Single polymer phase (all Phase A: 0)"""
-    tpms_grid = np.zeros((grid_size, grid_size, grid_size), dtype=np.uint8)
-    return None, tpms_grid, 0.0, 1.0
-
-def build_tpms_grid_with_target_ratio(grid_size, wavelength=10, target_phaseA_ratio=0.5):
-    """Co-continuous Gyroid phase"""
-    """Binarize the gyroid to match the specified Phase A volume ratio"""
-    z, y, x = np.mgrid[0:grid_size, 0:grid_size, 0:grid_size]
-    gyroid = (np.sin(x / wavelength) * np.cos(y / wavelength) + 
-              np.sin(y / wavelength) * np.cos(z / wavelength) + 
-              np.sin(z / wavelength) * np.cos(x / wavelength))
-    threshold = np.percentile(gyroid, target_phaseA_ratio * 100)
-    tpms_grid = np.where(gyroid > threshold, 1, 0).astype(np.uint8)
-    actual_phaseA_ratio = np.mean(tpms_grid == 0)
-    return gyroid, tpms_grid, threshold, actual_phaseA_ratio
-
-def build_lamellar_grid(grid_size, wavelength=10, target_phaseA_ratio=0.5):
-    """Lamellar structure (spread in XY plane, stacked in Z direction)"""
-    z, y, x = np.mgrid[0:grid_size, 0:grid_size, 0:grid_size]
+def get_oriented_rotation_matrix(mean_dir=(0.0, 0.0, 1.0), kappa=0.0):
+    """
+    Generate a 3x3 rotation matrix sampled from the von Mises-Fisher (vMF) distribution.
+    If kappa <= 0, it yields a completely isotropic (uniform) random rotation.
     
-    # 1D periodic function in the Z direction
-    field = np.cos(2 * np.pi * z / wavelength)
-    
-    threshold = np.percentile(field, target_phaseA_ratio * 100)
-    grid = np.where(field > threshold, 1, 0).astype(np.uint8)
-    actual_phaseA_ratio = np.mean(grid == 0)
-    
-    return field, grid, threshold, actual_phaseA_ratio
-
-def build_cylinder_hex_grid(grid_size, wavelength=15, target_phaseA_ratio=0.7):
-    """Cylinder structure (upright in Z-axis direction, hexagonal array in XY plane)"""
-    z, y, x = np.mgrid[0:grid_size, 0:grid_size, 0:grid_size]
-    q = 2 * np.pi / wavelength
-    
-    # Approximation of 2D hexagonal lattice (superposition of waves in 3 directions)
-    field = (np.cos(q * x) + 
-             np.cos(q * (x + np.sqrt(3) * y) / 2.0) + 
-             np.cos(q * (x - np.sqrt(3) * y) / 2.0))
-    
-    threshold = np.percentile(field, target_phaseA_ratio * 100)
-    grid = np.where(field > threshold, 1, 0).astype(np.uint8)
-    actual_phaseA_ratio = np.mean(grid == 0)
-    
-    return field, grid, threshold, actual_phaseA_ratio
-
-def build_bcc_grid(grid_size, wavelength=15, target_phaseA_ratio=0.7):
-    """Body-centered cubic structure (BCC: 3D regular array of spherical domains)"""
-    z, y, x = np.mgrid[0:grid_size, 0:grid_size, 0:grid_size]
-    q = 2 * np.pi / wavelength
-    
-    # Approximation of BCC lattice
-    field = (np.cos(q * x) * np.cos(q * y) + 
-             np.cos(q * y) * np.cos(q * z) + 
-             np.cos(q * z) * np.cos(q * x))
-    
-    threshold = np.percentile(field, target_phaseA_ratio * 100)
-    grid = np.where(field > threshold, 1, 0).astype(np.uint8)
-    actual_phaseA_ratio = np.mean(grid == 0)
-    
-    return field, grid, threshold, actual_phaseA_ratio
-
-def build_sea_island_grid(grid_size, island_radius=8, target_phaseA_ratio=0.7):
-    """Sea-island structure (Random sphere placement by Boolean model: Island is Phase B)"""
-    grid = np.zeros((grid_size, grid_size, grid_size), dtype=np.uint8)
-    target_voxels = int((grid_size**3) * (1 - target_phaseA_ratio))
-    placed_voxels = 0
-    
-    # Create island mask
-    size = int(island_radius * 2 + 2)
-    z, y, x = np.indices((size, size, size))
-    cz, cy, cx = size//2, size//2, size//2
-    sphere = (z - cz)**2 + (y - cy)**2 + (x - cx)**2 <= island_radius**2
-    coords = np.argwhere(sphere)
-    center = np.array(sphere.shape) // 2
-    offsets = coords - center
-    
-    attempts = 0
-    # Random placement allowing overlap
-    while placed_voxels < target_voxels and attempts < 100000:
-        attempts += 1
-        cz, cy, cx = rng.integers(0, grid_size, size=3)
-        t_coords = offsets + np.array([cz, cy, cx])
-        tz, ty, tx = t_coords[:, 0] % grid_size, t_coords[:, 1] % grid_size, t_coords[:, 2] % grid_size
+    Parameters:
+      mean_dir (tuple/list): The target mean direction vector.
+      kappa (float): Concentration parameter (0 = random, >0 = aligned to mean_dir).
+    """
+    # 1. Sample the Z-component (W)
+    if kappa <= 1e-5:
+        W = builder.rng.uniform(-1.0, 1.0)
+    else:
+        # Numerically stable inverse transform sampling (Avoids exp overflow for large kappa)
+        # W = 1 + (1/kappa) * ln( U + (1-U)*exp(-2*kappa) )
+        U = builder.rng.uniform(0.0, 1.0)
+        W = 1.0 + (1.0 / kappa) * np.log(U + (1.0 - U) * np.exp(-2.0 * kappa))
         
-        grid[tz, ty, tx] = 1
-        placed_voxels = np.sum(grid == 1)
+    # 2. Sample the azimuthal angle (Theta) uniformly
+    theta = builder.rng.uniform(0.0, 2.0 * np.pi)
+    
+    # 3. Generate the local vector aligned around the Z-axis
+    sin_W = np.sqrt(max(0.0, 1.0 - W**2))
+    v_z = np.array([sin_W * np.cos(theta), sin_W * np.sin(theta), W])
+    
+    # 4. Compute the rotation matrix to align the Z-axis with the specified mean_dir
+    m_dir = np.array(mean_dir, dtype=float)
+    m_norm = np.linalg.norm(m_dir)
+    if m_norm > 0:
+        m_dir /= m_norm
+    else:
+        m_dir = np.array([0.0, 0.0, 1.0])
         
-    actual_phaseA_ratio = 1.0 - (placed_voxels / (grid_size**3))
-    return None, grid, 0.0, actual_phaseA_ratio
+    base_z = np.array([0.0, 0.0, 1.0])
+    v = np.cross(base_z, m_dir)
+    s = np.linalg.norm(v)
+    c = np.dot(base_z, m_dir)
+    
+    if s < 1e-8:
+        # Already aligned or exactly anti-aligned
+        R_align = np.eye(3) if c > 0 else np.diag([1, -1, -1])
+    else:
+        # Rodrigues' rotation formula
+        vX = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+        R_align = np.eye(3) + vX + (vX @ vX) * ((1.0 - c) / (s**2))
+        
+    actual_z = R_align @ v_z
+    
+    # 5. Build the final rotation from base_z to actual_z, adding a random roll twist
+    v2 = np.cross(base_z, actual_z)
+    s2 = np.linalg.norm(v2)
+    c2 = np.dot(base_z, actual_z)
+    
+    if s2 < 1e-8:
+        R_target = np.eye(3) if c2 > 0 else np.diag([1, -1, -1])
+    else:
+        vX2 = np.array([[0, -v2[2], v2[1]], [v2[2], 0, -v2[0]], [-v2[1], v2[0], 0]])
+        R_target = np.eye(3) + vX2 + (vX2 @ vX2) * ((1.0 - c2) / (s2**2))
+        
+    # The roll angle (cross-sectional twist) remains uniformly random
+    roll = builder.rng.uniform(0.0, 2.0 * np.pi)
+    R_roll = np.array([
+        [np.cos(roll), -np.sin(roll), 0],
+        [np.sin(roll),  np.cos(roll), 0],
+        [0, 0, 1]
+    ])
+    
+    return R_target @ R_roll
 
-def build_island_sea_grid(grid_size, island_radius=8, target_phaseA_ratio=0.7):
-    """Island-sea structure (Random sphere placement by Boolean model: Island is Phase A)"""
-    target_phaseB_ratio = 1.0 - target_phaseA_ratio
-    _, grid, _, actual_phaseB_ratio = build_sea_island_grid(grid_size, island_radius, target_phaseB_ratio)
-    grid ^= 1
-    actual_phaseA_ratio = 1.0 - actual_phaseB_ratio
-    return None, grid, 0.0, actual_phaseA_ratio
 
 # =========================================================
 # B. Rigid Stamp Module (Sphere, Flake, Rigid Cylinder, etc.)
@@ -175,7 +141,7 @@ def create_fiber_mask(length, radius, max_bend_deg=90, max_total_bends=10):
     start_pos = np.array([box_size//2, box_size//2, box_size//2], dtype=float)
     backbone = [np.round(start_pos).astype(int)]
     current_pos = start_pos
-    vec = rng.standard_normal(3)
+    vec = builder.rng.standard_normal(3)
     vec /= np.linalg.norm(vec)
     bends_made = 0
 
@@ -183,9 +149,9 @@ def create_fiber_mask(length, radius, max_bend_deg=90, max_total_bends=10):
         next_pos_f = current_pos + vec
         next_pos_i = np.round(next_pos_f).astype(int)
         if any(p < radius or p >= box_size - radius for p in next_pos_i): break
-        if bends_made < max_total_bends and rng.random() < (max_total_bends / length):
-            angle_rad = np.radians(rng.uniform(10, max_bend_deg))
-            noise = rng.standard_normal(3)
+        if bends_made < max_total_bends and builder.rng.random() < (max_total_bends / length):
+            angle_rad = np.radians(builder.rng.uniform(10, max_bend_deg))
+            noise = builder.rng.standard_normal(3)
             noise -= noise.dot(vec) * vec
             if np.linalg.norm(noise) > 0:
                 noise /= np.linalg.norm(noise)
@@ -223,7 +189,7 @@ def create_agglomerate_mask(num_fibers, length, radius, max_bend_deg=90, max_tot
     
     for _ in range(num_fibers):
         fiber_mask, fiber_bb = _create_agglom_single_fiber_mask(length, radius, max_bend_deg, max_total_bends)
-        offset = np.round(rng.standard_normal(3) * start_radius).astype(int)
+        offset = np.round(builder.rng.standard_normal(3) * start_radius).astype(int)
         shifted_bb = np.array(fiber_bb) + offset
         all_backbones.append(shifted_bb)
         shift_z, shift_y, shift_x = offset
@@ -260,11 +226,11 @@ def create_agglomerate_mask(num_fibers, length, radius, max_bend_deg=90, max_tot
 
 def create_staggered_flakes_mask(radius=15, layer_thickness=2, min_layers=1, max_layers=4, max_offset_pct=20):
     """Generate a compound stamp of staggered platelets, rigorously standardizing its centroid."""
-    num_layers = rng.integers(min_layers, max_layers + 1)
+    num_layers = builder.rng.integers(min_layers, max_layers + 1)
     max_offset_px = radius * (max_offset_pct / 100.0)
     box_size = int(math.ceil((radius + num_layers * max_offset_px) * 2 + num_layers * layer_thickness)) + 4
     
-    angles = rng.random(3) * 2 * np.pi
+    angles = builder.rng.random(3) * 2 * np.pi
     az, ay, ax = angles
     R_orig = np.array([[math.cos(az), -math.sin(az), 0], [math.sin(az), math.cos(az), 0], [0, 0, 1]]) @ \
              np.array([[math.cos(ay), 0, math.sin(ay)], [0, 1, 0], [-math.sin(ay), 0, math.cos(ay)]]) @ \
@@ -279,9 +245,9 @@ def create_staggered_flakes_mask(radius=15, layer_thickness=2, min_layers=1, max
     cy, cx = 0.0, 0.0
     for i in range(num_layers):
         if i > 0:
-            angle = rng.uniform(0, 2 * np.pi)
-            cy += rng.uniform(0, max_offset_px) * np.sin(angle)
-            cx += rng.uniform(0, max_offset_px) * np.cos(angle)
+            angle = builder.rng.uniform(0, 2 * np.pi)
+            cy += builder.rng.uniform(0, max_offset_px) * np.sin(angle)
+            cx += builder.rng.uniform(0, max_offset_px) * np.cos(angle)
         z_c = - (num_layers * layer_thickness) / 2.0 + (i + 0.5) * layer_thickness
         local_centers.append([z_c, cy, cx])
         
@@ -315,7 +281,7 @@ def _create_agglom_single_fiber_mask(length, radius, max_bend_deg, max_total_ben
     straight_steps = int(max(3, length * 0.05))
     half_len_a = length // 2
     half_len_b = length - half_len_a
-    vec = rng.standard_normal(3)
+    vec = builder.rng.standard_normal(3)
     vec /= np.linalg.norm(vec)
     start_pos = center_pos
     
@@ -328,9 +294,9 @@ def _create_agglom_single_fiber_mask(length, radius, max_bend_deg, max_total_ben
         bend_prob = (max_total_bends / 2) / max(1, steps - straight_steps)
         for i in range(steps):
             if i >= straight_steps and bends < (max_total_bends / 2):
-                if rng.random() < bend_prob:
-                    angle_rad = np.radians(rng.uniform(20, max_bend_deg))
-                    noise = rng.standard_normal(3)
+                if builder.rng.random() < bend_prob:
+                    angle_rad = np.radians(builder.rng.uniform(20, max_bend_deg))
+                    noise = builder.rng.standard_normal(3)
                     noise -= noise.dot(v) * v
                     if np.linalg.norm(noise) > 0:
                         noise /= np.linalg.norm(noise)
@@ -373,20 +339,27 @@ def get_sphere_mask(radius, physics_mode='thermal'):
     }
     return cropped_mask, geom_data
 
-def get_flake_mask(radius, thickness, physics_mode='thermal'):
-    """Flake-shaped filler with Polar Decomposition support"""
+def get_flake_mask(radius, thickness, mean_dir=(0.0, 0.0, 1.0), kappa=0.0, physics_mode='thermal'):
+    """
+    Generate a flake-shaped filler (platelet) mask with Polar Decomposition support.
+    
+    Parameters:
+      radius (float): Radius of the flake.
+      thickness (float): Thickness of the flake.
+      mean_dir (tuple/list): Target orientation vector (normal to the flake surface).
+      kappa (float): vMF concentration parameter (0 = random, higher = strictly aligned).
+    """
     size = int(radius * 2 + 4)
-    angles = rng.random(3) * 2 * np.pi
-    az, ay, ax = angles
-    R_orig = np.array([[math.cos(az), -math.sin(az), 0], [math.sin(az), math.cos(az), 0], [0, 0, 1]]) @ \
-             np.array([[math.cos(ay), 0, math.sin(ay)], [0, 1, 0], [-math.sin(ay), 0, math.cos(ay)]]) @ \
-             np.array([[1, 0, 0], [0, math.cos(ax), -math.sin(ax)], [0, math.sin(ax), math.cos(ax)]])
+    
+    # Apply vMF distribution for orientation control instead of isotropic random Euler angles
+    R_orig = get_oriented_rotation_matrix(mean_dir=mean_dir, kappa=kappa)
              
     Z, Y, X = np.indices((size, size, size))
     Z = Z - size//2; Y = Y - size//2; X = X - size//2
     rot = R_orig @ np.stack([Z.ravel(), Y.ravel(), X.ravel()])
     Zr, Yr, Xr = rot[0,:].reshape((size, size, size)), rot[1,:].reshape((size, size, size)), rot[2,:].reshape((size, size, size))
     
+    # Mask generation based on rotated coordinates
     mask = (Xr**2 + Yr**2 <= radius**2) & (np.abs(Zr) <= thickness/2)
     cm_global_abs = np.array([size//2, size//2, size//2], dtype=float)
     cropped_mask, offset = crop_and_standardize(mask, cm_global_abs)
@@ -404,12 +377,90 @@ def get_staggered_flakes_mask(radius=15, layer_thickness=2, min_layers=1, max_la
 def get_flexible_fiber_mask(length=90, radius=2, max_bend_deg=90, max_total_bends=10, physics_mode='thermal'):
     return create_fiber_mask(length, radius, max_bend_deg, max_total_bends)
 
-def get_rigid_cylinder_mask(length, radius, physics_mode='thermal'):
-    """Rigid short fiber matching exact original geometry but accelerated without binary_dilation"""
+
+def get_irregular_fiber_mask(length, shape_type='ellipse', radius_max=5.0, ratio=0.5, 
+                             mean_dir=(0.0, 0.0, 1.0), kappa=0.0, physics_mode='thermal'):
+    """
+    Generate a rigid straight fiber with an irregular cross-section (Ellipse, Bean, or C-shape).
+    
+    Parameters:
+      shape_type (str): 'ellipse', 'bean', or 'c-shape'
+      radius_max (float): Major radius for Ellipse, or Maximum outer radius for Bean/C-shape.
+      ratio (float): A scaling factor (0.0 < ratio < 1.0) where radius_max is the denominator.
+      mean_dir (tuple/list): Target orientation vector for the fiber axis.
+      kappa (float): vMF concentration parameter (0 = random, higher = strictly aligned).
+    """
+    # Create a sufficient bounding box to accommodate arbitrary 3D rotation
+    box_size = int(length + radius_max * 2 + 5)
+    
+    # Apply vMF distribution for orientation control instead of isotropic random Euler angles
+    R_orig = get_oriented_rotation_matrix(mean_dir=mean_dir, kappa=kappa)
+             
+    Z, Y, X = np.indices((box_size, box_size, box_size))
+    Z = Z - box_size//2; Y = Y - box_size//2; X = X - box_size//2
+    rot = R_orig @ np.stack([Z.ravel(), Y.ravel(), X.ravel()])
+    Zr, Yr, Xr = rot[0,:].reshape((box_size, box_size, box_size)), rot[1,:].reshape((box_size, box_size, box_size)), rot[2,:].reshape((box_size, box_size, box_size))
+    
+    # Common longitudinal mask along the local Z-axis
+    z_mask = np.abs(Zr) <= length / 2.0
+    
+    if shape_type == 'ellipse':
+        r_min = radius_max * ratio
+        xy_mask = (Xr**2 / radius_max**2 + Yr**2 / r_min**2 <= 1)
+        
+    elif shape_type == 'bean':
+        r_min = radius_max * ratio
+        # Bend the X direction proportionally to the square of Y (Mathematical model for Kidney/Bean shape)
+        X_w = Xr - 0.5 * (Yr**2 / radius_max)
+        xy_mask = (X_w**2 / r_min**2 + Yr**2 / radius_max**2 <= 1)
+        
+    elif shape_type == 'c-shape':
+        r_in = radius_max * ratio
+        r2 = Xr**2 + Yr**2
+        angle = np.arctan2(Yr, Xr)
+        # Literal 'C' shape to allow polymer/filler packing inside.
+        # 120-degree opening (cut out ±60 degrees), resulting in a typical 240-degree wrap.
+        xy_mask = (r2 <= radius_max**2) & (r2 >= r_in**2) & (np.abs(angle) > np.radians(60))
+        
+    else:
+        raise ValueError(f"Unknown shape_type: {shape_type}")
+        
+    mask = xy_mask & z_mask
+    
+    cm_global_abs = np.array([box_size//2, box_size//2, box_size//2], dtype=float)
+    cropped_mask, offset = crop_and_standardize(mask, cm_global_abs)
+    
+    geom_data = {
+        'base_type': 'irregular_fiber', 
+        'shape_type': shape_type,
+        'length': length,
+        'radius_max': radius_max, 
+        'ratio': ratio,
+        'radius': radius_max, # Required for dynamic bounding box calculations
+        'R_orig': R_orig.tolist(), 
+        'local_kinematics': [[0.0, 0.0, 0.0]], 
+        'offset_center_to_cm': offset.tolist()
+    }
+    return cropped_mask, geom_data
+
+def get_rigid_cylinder_mask(length, radius, mean_dir=(0.0, 0.0, 1.0), kappa=0.0, physics_mode='thermal'):
+    """
+    Generate a rigid short fiber matching the exact original geometry but accelerated 
+    without binary_dilation.
+    
+    Parameters:
+      length (float): Length of the fiber backbone.
+      radius (float): Cross-sectional radius of the fiber.
+      mean_dir (tuple/list): Target orientation vector for the fiber axis.
+      kappa (float): vMF concentration parameter (0 = random, higher = strictly aligned).
+    """
     box_size = int(length + radius * 2 + 5)
     mask = np.zeros((box_size, box_size, box_size), dtype=bool)
-    vec = rng.standard_normal(3)
-    vec /= np.linalg.norm(vec)
+    
+    # Extract the Z-axis column from the vMF rotation matrix as the growth direction vector
+    R_vmf = get_oriented_rotation_matrix(mean_dir=mean_dir, kappa=kappa)
+    vec = R_vmf[:, 2] 
+    
     start_pos = np.array([box_size//2, box_size//2, box_size//2], dtype=float) - vec * (length / 2)
     
     kinematic_backbone = []
@@ -436,6 +487,8 @@ def get_rigid_cylinder_mask(length, radius, physics_mode='thermal'):
     
     geom_data = {
         'base_type': 'fiber', 'radius': radius,
+        # Rigid fibers encode orientation entirely within local_kinematics points, 
+        # so R_orig is kept as identity to prevent double-rotation during stretch rendering.
         'R_orig': np.eye(3).tolist(), 'local_kinematics': local_kinematics.tolist(),
         'offset_center_to_cm': offset.tolist()
     }
@@ -465,7 +518,7 @@ def grow_adaptive_fiber(tpms_grid, comp_grid, start_pos, length, overlap_mode,
     backbone = [start_pos]
     current_pos = np.array(start_pos, dtype=float)
     
-    vec = rng.standard_normal(3)
+    vec = builder.rng.standard_normal(3)
     vec /= np.linalg.norm(vec)
     
     bends_made = 0
@@ -527,11 +580,11 @@ def grow_adaptive_fiber(tpms_grid, comp_grid, start_pos, length, overlap_mode,
             step_success = False
             if bends_made < max_total_bends:
                 for _ in range(max_retries_per_step):
-                    angle_deg = rng.uniform(10, max_bend_deg)
+                    angle_deg = builder.rng.uniform(10, max_bend_deg)
                     
                     # Snap to "180-degree U-turn + side step" if 90 degrees or more
                     if angle_deg >= 90.0:
-                        noise = rng.standard_normal(3)
+                        noise = builder.rng.standard_normal(3)
                         u_ortho = noise - noise.dot(vec) * vec
                         if np.linalg.norm(u_ortho) == 0: continue
                         u_ortho /= np.linalg.norm(u_ortho)
@@ -566,7 +619,7 @@ def grow_adaptive_fiber(tpms_grid, comp_grid, start_pos, length, overlap_mode,
                     else:
                         # Normal bend of less than 90 degrees
                         angle_rad = np.radians(angle_deg)
-                        noise = rng.standard_normal(3)
+                        noise = builder.rng.standard_normal(3)
                         noise -= noise.dot(vec) * vec
                         if np.linalg.norm(noise) > 0:
                             noise /= np.linalg.norm(noise)
@@ -674,7 +727,7 @@ def place_adaptive_fibers(comp_grid, tpms_grid, target_vol_frac, length, radius,
             if not overlap_mode and consecutive_fails > 500:
                 overlap_mode = True
 
-            idx = rng.integers(0, num_valid_coords)
+            idx = builder.rng.integers(0, num_valid_coords)
             start_pos = (valid_z[idx], valid_y[idx], valid_x[idx])
 
             backbone = grow_adaptive_fiber(
@@ -852,7 +905,7 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
                 cache_reuse_count = 0
 
             # Pick a random valid coordinate
-            idx = rng.integers(0, num_valid_coords)
+            idx = builder.rng.integers(0, num_valid_coords)
             cz, cy, cx = valid_z[idx], valid_y[idx], valid_x[idx]
 
             # Execute Numba-optimized placement routine
@@ -923,311 +976,6 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
             f.write(log_text)
 
     return placed_voxels
-
-# =========================================================
-# E. Final Structure Integration, Cleanup, and Aggregation
-# =========================================================
-
-def _make_6n_kernel():
-    """Create a 3D convolution kernel for 6-neighborhood (cross shape)"""
-    kernel = np.zeros((3, 3, 3), dtype=np.uint8)
-    kernel[1, 1, 0] = 1
-    kernel[1, 1, 2] = 1
-    kernel[1, 0, 1] = 1
-    kernel[1, 2, 1] = 1
-    kernel[0, 1, 1] = 1
-    kernel[2, 1, 1] = 1
-    return kernel
-
-_NEIGHBOR6_KERNEL = _make_6n_kernel()
-
-def _remove_spikes_6n(mask, min_neighbors=2):
-    """
-    Remove burr/spike voxels using 6-neighbor connectivity.
-    A voxel is removed if it has fewer than min_neighbors neighbors within the same mask.
-    """
-    if not np.any(mask):
-        return mask
-    neighbor_count = convolve(mask.astype(np.uint8), _NEIGHBOR6_KERNEL, mode="wrap")
-    return mask & (neighbor_count >= min_neighbors)
-
-def _fill_polymer_slivers(final_grid, target_id=2, filler_start_id=4):
-    """
-    Convert polymer voxels to interface when they are directly sandwiched
-    between filler and interface in 6-neighborhood.
-    """
-    polymer_mask = final_grid < 2
-    filler_mask = final_grid >= filler_start_id
-    interface_mask = final_grid == target_id
-
-    filler_nb = convolve(filler_mask.astype(np.uint8), _NEIGHBOR6_KERNEL, mode="wrap") > 0
-    interface_nb = convolve(interface_mask.astype(np.uint8), _NEIGHBOR6_KERNEL, mode="wrap") > 0
-
-    sliver_mask = polymer_mask & filler_nb & interface_nb
-    if np.any(sliver_mask):
-        final_grid[sliver_mask] = target_id
-
-    return final_grid
-
-def _cleanup_small_components(mask, min_component_size=2):
-    """
-    Remove tiny isolated connected components from a boolean mask.
-    Uses 6-neighbor connectivity.
-    """
-    if not np.any(mask):
-        return mask
-
-    labeled, num = label(mask, structure=_NEIGHBOR6_KERNEL)
-    if num == 0:
-        return mask
-
-    counts = np.bincount(labeled.ravel())
-    keep = counts >= min_component_size
-    keep[0] = False
-
-    return keep[labeled]
-
-def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics_mode='thermal', 
-                            primary_inter_id=3, secondary_inter_id=3, filler_start_id=4,
-                            sliver_fill_iters=1, spike_min_neighbors=2, min_interface_component_size=2,
-                            contact_radius=1):
-    """
-    Combine background and filler phases.
-    For electrical/mechanics modes, cleans up the unified interface, then splits it 
-    into Primary (distance 1) and Secondary (distance 2) based on filler proximity.
-    """
-    final_grid = np.where(comp_grid > 0, comp_grid, tpms_grid).astype(np.uint8)
-
-    if physics_mode in ['electrical', 'mechanics'] and shell_count_grid is not None:
-        pure_shell_counts = shell_count_grid & 127
-        tunnel_mask = (pure_shell_counts >= 2) & (final_grid < filler_start_id)
-        final_grid[tunnel_mask] = primary_inter_id
-
-    # --- Common Interface Cleanup ---
-    # 1) Polymer sliver fill
-    for _ in range(sliver_fill_iters):
-        before = np.count_nonzero(final_grid == primary_inter_id)
-        final_grid = _fill_polymer_slivers(final_grid, target_id=primary_inter_id, filler_start_id=filler_start_id)
-        after = np.count_nonzero(final_grid == primary_inter_id)
-        if after == before:
-            break
-
-    # 2) Spike removal on interface only
-    original_interface_mask = (final_grid == primary_inter_id)
-    interface_mask = _remove_spikes_6n(original_interface_mask, min_neighbors=spike_min_neighbors)
-
-    # 3) Small component cleanup on interface only
-    interface_mask = _cleanup_small_components(
-        interface_mask,
-        min_component_size=min_interface_component_size
-    )
-
-    # Identify voxels removed during cleanup
-    removed_interface = original_interface_mask & (~interface_mask)
-
-    # Rebuild grid based on physics mode semantics
-    if physics_mode in ['electrical', 'mechanics']:
-        # Revert removed unified interface back to polymer
-        writable_mask = (final_grid < filler_start_id)
-        final_grid[removed_interface & writable_mask] = tpms_grid[removed_interface & writable_mask]
-        
-        # --- Split remaining interface into Primary and Secondary based on distance ---
-        unified_interface_mask = (final_grid == primary_inter_id)
-        filler_mask = (final_grid >= filler_start_id)
-        
-        if np.any(unified_interface_mask) and np.any(filler_mask):
-            # Dilate filler (contact_radius) times by exactly 1 voxel in 6-neighborhood
-            struct_1voxel = generate_binary_structure(3, 1)
-            dilated_filler = binary_dilation(filler_mask, structure=struct_1voxel, iterations=contact_radius)
-            
-            # Secondary interface is the part of the unified interface NOT touched by the dilation
-            secondary_mask = unified_interface_mask & (~dilated_filler)
-            
-            # Update the grid
-            final_grid[secondary_mask] = secondary_inter_id
-            # (Primary interface voxels remain as primary_inter_id)
-
-    elif physics_mode == 'thermal':
-        # Revert removed interface (contact penalty) to the most prevalent adjacent filler ID
-        # (This block is kept for legacy safety)
-        if np.any(removed_interface):
-            filler_ids = np.unique(final_grid[final_grid >= filler_start_id])
-            if len(filler_ids) == 0:
-                final_grid[removed_interface] = filler_start_id
-            elif len(filler_ids) == 1:
-                final_grid[removed_interface] = filler_ids[0]
-            else:
-                counts = []
-                for fid in filler_ids:
-                    c = convolve((final_grid == fid).astype(np.uint8), _NEIGHBOR6_KERNEL, mode="wrap")
-                    counts.append(c[removed_interface])
-                counts = np.array(counts)
-                best_idx = np.argmax(counts, axis=0)
-                final_grid[removed_interface] = filler_ids[best_idx]
-
-        # --- Evaluate Primary and Secondary Interfaces using Bitwise Flags ---
-        if shell_count_grid is not None:
-            # 1. Evaluate Primary Interface (Core Overlap) using Distance Transform
-            # The overlap flag was stored in the highest bit (128) using bitwise OR.
-            overlap_mask = (shell_count_grid & 128) > 0
-            
-            if np.any(overlap_mask):
-                # Calculate Euclidean distance from the background (non-overlap regions)
-                distance_grid = distance_transform_edt(overlap_mask)
-                
-                # Threshold for contact thickness. 
-                # 1.5 effectively removes large bulk overlaps while keeping thin contacts.
-                max_contact_thickness = 1.5 
-                
-                # Voxels within the threshold become Primary Interface
-                valid_primary_mask = overlap_mask & (distance_grid <= max_contact_thickness)
-                final_grid[valid_primary_mask] = primary_inter_id
-
-            # 2. Evaluate Secondary Interface (Kapitza Bridge)
-            # Shell counts are stored in the lower 7 bits (0-127). We extract them via bitwise AND with 127.
-            pure_shell_counts = shell_count_grid & 127
-            
-            # Secondary interfaces are formed in polymer spaces (final_grid < 2) 
-            # where the pure shell count is 2 or more.
-            raw_kapitza_mask = (final_grid < 2) & (pure_shell_counts >= 2)
-            
-            # --- Apply Image Processing Cleanup ONLY to Kapitza Bridge ---
-            cleaned_kapitza_mask = raw_kapitza_mask.copy()
-            cleaned_kapitza_mask = _remove_spikes_6n(cleaned_kapitza_mask, min_neighbors=spike_min_neighbors)
-            cleaned_kapitza_mask = _cleanup_small_components(cleaned_kapitza_mask, min_component_size=min_interface_component_size)
-            
-            # Write the stabilized Secondary Interface to the final grid
-            final_grid[cleaned_kapitza_mask] = secondary_inter_id
-
-    return final_grid
-
-def summarize_phase_fractions(final_grid, primary_inter_id=3, secondary_inter_id=3, filler_start_id=4):
-    """Aggregate the volume fraction of each phase."""
-    total_voxels = final_grid.size
-    max_id = final_grid.max()
-    counts = np.bincount(final_grid.ravel(), minlength=max(filler_start_id, max_id + 1))
-
-    stats = {
-        'polymer_a_fraction': counts[0] / total_voxels,
-        'polymer_b_fraction': counts[1] / total_voxels,
-        'primary_interface_fraction': counts[primary_inter_id] / total_voxels,
-        'secondary_interface_fraction': counts[secondary_inter_id] / total_voxels if len(counts) > secondary_inter_id else 0.0,
-    }
-
-    filler_total = 0
-    for i in range(filler_start_id, max_id + 1):
-        stats[f'filler_id{i}_fraction'] = counts[i] / total_voxels
-        filler_total += counts[i] / total_voxels
-
-    stats['filler_total_fraction'] = filler_total
-    stats['polymer_fraction'] = (counts[0] + counts[1]) / total_voxels
-    return stats
-
-
-def compute_structure_metrics(final_grid, primary_inter_id=3, secondary_inter_id=2, filler_start_id=4):
-    """
-    Compute lightweight conductive structure descriptors directly from the final grid.
-
-    Definitions:
-    - contact_ratio: primary interface voxels normalized by filler voxels.
-    - tunneling_ratio: secondary interface voxels normalized by filler voxels.
-    - connectivity_ratio: largest 6-neighbor connected conductive cluster normalized by
-      all conductive candidate voxels (filler + primary + secondary interface).
-
-    These metrics are intentionally post-process descriptors derived from the final grid,
-    so they are available for both fresh builds and recalculation workflows.
-    """
-    max_id = int(final_grid.max())
-    counts = np.bincount(final_grid.ravel(), minlength=max(filler_start_id, max_id + 1))
-
-    filler_voxels = int(counts[filler_start_id:].sum()) if len(counts) > filler_start_id else 0
-    primary_voxels = int(counts[primary_inter_id]) if len(counts) > primary_inter_id else 0
-    secondary_voxels = int(counts[secondary_inter_id]) if len(counts) > secondary_inter_id else 0
-
-    conductive_mask = (final_grid >= filler_start_id)
-    conductive_mask |= (final_grid == primary_inter_id)
-    if secondary_inter_id != primary_inter_id:
-        conductive_mask |= (final_grid == secondary_inter_id)
-
-    conductive_candidate_voxels = int(np.count_nonzero(conductive_mask))
-    largest_cluster_voxels = 0
-    num_conductive_clusters = 0
-
-    if conductive_candidate_voxels > 0:
-        structure = generate_binary_structure(3, 1)
-        labeled, num_conductive_clusters = label(conductive_mask, structure=structure)
-        if num_conductive_clusters > 0:
-            cluster_sizes = np.bincount(labeled.ravel())[1:]
-            if cluster_sizes.size > 0:
-                largest_cluster_voxels = int(cluster_sizes.max())
-
-    filler_denom = float(filler_voxels) if filler_voxels > 0 else 0.0
-    conductive_denom = float(conductive_candidate_voxels) if conductive_candidate_voxels > 0 else 0.0
-
-    return {
-        'contact_ratio': (primary_voxels / filler_denom) if filler_denom > 0 else 0.0,
-        'tunneling_ratio': (secondary_voxels / filler_denom) if filler_denom > 0 else 0.0,
-        'connectivity_ratio': (largest_cluster_voxels / conductive_denom) if conductive_denom > 0 else 0.0,
-        'n_contact_voxels': primary_voxels,
-        'n_tunnel_voxels': secondary_voxels,
-        'n_filler_voxels': filler_voxels,
-        'n_conductive_candidate_voxels': conductive_candidate_voxels,
-        'n_largest_cluster_voxels': largest_cluster_voxels,
-        'n_conductive_clusters': int(num_conductive_clusters),
-    }
-
-def export_visualization_vti(final_grid, filename="microstructure.vti", voxel_size=1e-8, metadata=None):
-    """
-    Output the 3D grid in the optimal VTI format for ParaView.
-    Embed physical dimensions (voxel_size) and metadata for HUD (metadata) in Field Data.
-    """
-    grid = pv.ImageData()
-    
-    # NumPy (Z, Y, X) -> PyVista (X, Y, Z)
-    nz, ny, nx = final_grid.shape
-    grid.dimensions = (nx + 1, ny + 1, nz + 1)
-    
-    # Set physical scale
-    grid.spacing = (voxel_size, voxel_size, voxel_size)
-    grid.origin = (0.0, 0.0, 0.0)
-    
-    # Store in cell_data
-    grid.cell_data["Phase"] = final_grid.flatten(order="C")
-    
-    # Embed metadata (for HUD)
-    if metadata:
-        for key, value in metadata.items():
-            grid.field_data[key] = [value]
-            
-    grid.save(filename)
-    return grid
-
-def export_chfem_inputs(final_grid, base_filename="model", voxel_size=1e-8, physics_mode='thermal', prop_map=None):
-    """Export raw binary array and neutral file (.nf) for chfem solver"""
-    raw_filename = f"{base_filename}.raw"
-    final_grid.tofile(raw_filename)
-    nf_filename = f"{base_filename}.nf"
-    shape = final_grid.shape
-
-    analysis_type = 1 if physics_mode == 'mechanics' else 0
-    num_materials = len(prop_map)
-
-    # Write out physical properties in dictionary ID order (0, 1, 2...)
-    props_str = "\n".join([f"{k} {v}" for k, v in sorted(prop_map.items())])
-
-    nf_content = f"""%type_of_analysis {analysis_type}
-%voxel_size {voxel_size}
-%solver_tolerance 2.5e-07
-%number_of_iterations 20000
-%image_dimensions {shape[2]} {shape[1]} {shape[0]}
-%refinement 1
-%number_of_materials {num_materials}
-%properties_of_materials
-{props_str}
-%data_type float64
-"""
-    with open(nf_filename, 'w') as f:
-        f.write(nf_content)
 
 # =========================================================
 # F. Affine Deformation & Rendering Module
@@ -1315,16 +1063,21 @@ def _render_and_paste_kinematics(comp_grid, shell_count_grid, P_CM_new, F_mat, g
     radius = geom['radius']
     local_kinematics = geom['local_kinematics']
 
-    if base_type in ['flake', 'staggered']:
+    if base_type in ['flake', 'staggered', 'irregular_fiber']:
         # Extract pure rigid-body rotation (Polar Decomposition)
         R_local_to_global = R_orig.T
         R_pure_local_to_global, _ = polar(F_mat @ R_local_to_global)
 
         loc_pts = np.array(local_kinematics)
         new_rel_global_centers = (R_pure_local_to_global @ loc_pts.T).T
-
+        
         # Dynamic bounding box based on transformed geometry
-        max_radius = radius + 2
+        if base_type == 'irregular_fiber':
+            effective_radius = geom['length'] / 2.0 + radius
+        else:
+            effective_radius = radius
+        
+        max_radius = effective_radius + 2
         min_b = np.floor(new_rel_global_centers.min(axis=0)).astype(int) - int(max_radius)
         max_b = np.ceil(new_rel_global_centers.max(axis=0)).astype(int) + int(max_radius)
         box_shape = tuple(max_b - min_b + 1)
@@ -1348,6 +1101,39 @@ def _render_and_paste_kinematics(comp_grid, shell_count_grid, P_CM_new, F_mat, g
             thickness = geom['thickness']
             z_c, y_c, x_c = local_kinematics[0]
             mask |= ((X_loc - x_c)**2 + (Y_loc - y_c)**2 <= radius**2) & (np.abs(Z_loc - z_c) <= thickness / 2.0)
+
+        # --- Render mathematical Boolean masks for Irregular Fibers ---
+        elif base_type == 'irregular_fiber':
+            length = geom['length']
+            shape_type = geom['shape_type']
+            r_max = geom['radius_max']
+            ratio = geom['ratio']
+            z_c, y_c, x_c = local_kinematics[0]
+            
+            Z_rel = Z_loc - z_c
+            Y_rel = Y_loc - y_c
+            X_rel = X_loc - x_c
+            
+            z_mask = np.abs(Z_rel) <= length / 2.0
+            
+            if shape_type == 'ellipse':
+                r_min = r_max * ratio
+                xy_mask = (X_rel**2 / r_max**2 + Y_rel**2 / r_min**2 <= 1)
+                
+            elif shape_type == 'bean':
+                r_min = r_max * ratio
+                # Bend the X direction proportionally to the square of Y (Kidney/Bean shape)
+                X_w = X_rel - 0.5 * (Y_rel**2 / r_max)
+                xy_mask = (X_w**2 / r_min**2 + Y_rel**2 / r_max**2 <= 1)
+                
+            elif shape_type == 'c-shape':
+                r_in = r_max * ratio
+                r2 = X_rel**2 + Y_rel**2
+                angle = np.arctan2(Y_rel, X_rel)
+                # 120-degree opening (cut out ±60 degrees)
+                xy_mask = (r2 <= r_max**2) & (r2 >= r_in**2) & (np.abs(angle) > np.radians(60))
+                
+            mask |= (xy_mask & z_mask)
 
         coords_nz = np.argwhere(mask > 0)
         if len(coords_nz) == 0: return

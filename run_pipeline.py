@@ -1,12 +1,10 @@
 import argparse
-import time
 import csv
 import os
-import re
 import subprocess
-import shutil
+import time
+
 import numpy as np
-import matplotlib.pyplot as plt
 
 # Import from micro_builder
 from micro_builder import (
@@ -23,6 +21,7 @@ from micro_builder import (
     get_flake_mask,
     get_sphere_mask,
     get_rigid_cylinder_mask,
+    get_irregular_fiber_mask,
     get_flexible_fiber_mask,
     get_agglomerate_mask,
     get_staggered_flakes_mask,
@@ -34,433 +33,20 @@ from micro_builder import (
     apply_background_deformation,
     render_deformed_fillers
 )
-
-def parse_chfem_log(log_path):
-    """Extract up to 6 diagonal tensor components (General Txx-Txy notation) and computation time"""
-    # Initialize with empty strings for all 6 possible components (xx, yy, zz, yz, zx, xy)
-    diag = [""] * 6
-    total_time = 0.0
-    try:
-        if not os.path.exists(log_path):
-            return diag, 0.0
-            
-        with open(log_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-
-        # Extract the homogenized constitutive matrix block
-        mat_match = re.search(r'Homogenized Constitutive Matrix.*?:[^\n]*\n(.*?)\n-{10,}', content, re.DOTALL)
-        if mat_match:
-            lines = [line.strip() for line in mat_match.group(1).strip().split('\n') if line.strip()]
-            # Extract diagonal elements dynamically based on matrix size (3x3 or 6x6)
-            for i in range(min(len(lines), 6)):
-                parts = lines[i].split()
-                if len(parts) > i:
-                    diag[i] = float(parts[i])
-
-        # Sum up elapsed time matches
-        time_matches = re.findall(r'Elapsed time(?: \(total\))?:\s*([\d\.eE\+\-]+)', content)
-        if time_matches:
-            total_time = sum(float(t) for t in time_matches)
-    except Exception as e:
-        print(f"chfem log parsing error: {e}")
-
-    return diag, total_time
-
-def parse_nf_properties(nf_path):
-    """Read and parse property map from an existing .nf file"""
-    prop_map = {}
-    if not os.path.exists(nf_path):
-        return prop_map
-        
-    with open(nf_path, 'r', encoding='utf-8') as f:
-        lines = f.readlines()
-        
-    in_props = False
-    for line in lines:
-        line = line.strip()
-        if not line: continue
-        
-        if line.startswith('%properties_of_materials'):
-            in_props = True
-            continue
-        elif line.startswith('%') and in_props:
-            in_props = False # Reached another section
-            
-        if in_props:
-            parts = line.split()
-            if len(parts) >= 2:
-                phase_id = int(parts[0])
-                prop_val = " ".join(parts[1:])
-                prop_map[phase_id] = prop_val
-                
-    return prop_map
-
-
-STRUCTURE_METRIC_COLUMNS = [
-    "Contact_Ratio", "Tunneling_Ratio", "Connectivity_Ratio",
-    "N_Contact_Voxels", "N_Tunnel_Voxels", "N_Filler_Voxels",
-    "N_Conductive_Candidate_Voxels", "N_Largest_Cluster_Voxels", "N_Conductive_Clusters"
-]
-
-
-def structure_metrics_to_csv_fields(metrics):
-    """Format structure metrics for stable CSV output."""
-    return {
-        "Contact_Ratio": f"{metrics['contact_ratio']:.4f}",
-        "Tunneling_Ratio": f"{metrics['tunneling_ratio']:.4f}",
-        "Connectivity_Ratio": f"{metrics['connectivity_ratio']:.4f}",
-        "N_Contact_Voxels": str(metrics['n_contact_voxels']),
-        "N_Tunnel_Voxels": str(metrics['n_tunnel_voxels']),
-        "N_Filler_Voxels": str(metrics['n_filler_voxels']),
-        "N_Conductive_Candidate_Voxels": str(metrics['n_conductive_candidate_voxels']),
-        "N_Largest_Cluster_Voxels": str(metrics['n_largest_cluster_voxels']),
-        "N_Conductive_Clusters": str(metrics['n_conductive_clusters']),
-    }
-
-
-def ensure_structure_metric_columns(header, rows):
-    """Append missing structure-metric columns and pad existing rows."""
-    missing = [col for col in STRUCTURE_METRIC_COLUMNS if col not in header]
-    if not missing:
-        return header, rows
-
-    header = header + missing
-    for row in rows:
-        row.extend([""] * len(missing))
-    return header, rows
-
-
-def upgrade_existing_csv_log(csv_path):
-    """Upgrade an existing CSV log in place when new structure-metric columns are missing."""
-    if not os.path.exists(csv_path):
-        return
-
-    with open(csv_path, 'r', encoding='utf-8', newline='') as f:
-        reader = csv.reader(f)
-        try:
-            header = next(reader)
-        except StopIteration:
-            return
-        rows = list(reader)
-
-    new_header, new_rows = ensure_structure_metric_columns(header, rows)
-    if new_header == header:
-        return
-
-    with open(csv_path, 'w', encoding='utf-8', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow(new_header)
-        writer.writerows(new_rows)
-
-def run_recalculation_mode(args):
-    """Executes the recalculation pipeline using existing .raw and .nf files"""
-    if not os.path.exists(args.csv_log):
-        print(f"Error: CSV file '{args.csv_log}' not found for recalculation.")
-        return
-
-    # 1. Create a backup of the original CSV
-    backup_path = args.csv_log + ".backup"
-    shutil.copy2(args.csv_log, backup_path)
-    print(f"--- Recalculation Mode Started ---")
-    print(f"Backup created at: {backup_path}")
-
-    # Fallback properties from command-line arguments (used if .nf is missing or new IDs found)
-    if args.physics_mode == 'thermal':
-        fallback_props = {0: "0.3", 1: "0.3", 2: "30.0", 3: "30.0", 4: "300.0"}
-    elif args.physics_mode == 'electrical':
-        fallback_props = {0: "1e-4", 1: "1e-4", 2: "1e-3", 3: "1e-1", 4: "1e4"}
-    else:  # mechanics
-        fallback_props = {0: "3.0 1.0", 1: "3.0 1.0", 2: "10.0 3.0", 3: "15.0 5.0", 4: "100.0 50.0"}
-
-    # Load the original CSV into memory.
-    # The recalculation loop updates only refreshed values, then rewrites the full CSV after each row.
-    with open(args.csv_log, 'r', encoding='utf-8') as f:
-        reader = csv.reader(f)
-        header = next(reader)
-        rows = list(reader)
-
-    header, rows = ensure_structure_metric_columns(header, rows)
-
-    # Required metadata columns for identifying files and grid dimensions
-    try:
-        idx_basename = header.index("Basename")
-        idx_grid_size = header.index("Grid_Size")
-        idx_voxel_size = header.index("Voxel_Size_m")
-        idx_mode = header.index("Mode")
-    except ValueError as e:
-        print(f"Error: CSV is missing required columns ({e})")
-        return
-
-    # 2. Iterate through each model in the CSV
-    for row_idx, row in enumerate(rows):
-        basename = row[idx_basename]
-        grid_size_str = row[idx_grid_size]
-        voxel_size = float(row[idx_voxel_size])
-        mode = row[idx_mode]
-
-        print(f"\nRecalculating: {basename}")
-
-        raw_file = f"{basename}.raw"
-        nf_file = f"{basename}.nf"
-
-        if not os.path.exists(raw_file):
-            print(f"  Skipping: {raw_file} not found.")
-            continue
-
-        # Restore grid to determine unique Phase IDs
-        dim_parts = grid_size_str.split('x')
-        nx, ny, nz = int(dim_parts[0]), int(dim_parts[1]), int(dim_parts[2])
-        final_grid = np.fromfile(raw_file, dtype=np.uint8).reshape((nz, ny, nx))
-
-        # 3. Resolve Property Map (Task 5 Fix: Preserve heterogeneity)
-        prop_map = parse_nf_properties(nf_file)
-
-        if args.overwrite_props or not prop_map:
-            print("  Updating properties from command-line arguments...")
-            cli_overrides = {0: args.prop_A, 1: args.prop_B, 2: args.prop_inter2, 3: args.prop_inter}
-            unique_ids = np.unique(final_grid)
-
-            for uid in unique_ids:
-                # Priority 1: User-specified CLI override
-                if uid in cli_overrides and cli_overrides[uid] is not None:
-                    prop_map[uid] = cli_overrides[uid]
-                # Priority 2: Keep existing .nf property if present (protects multiple filler IDs)
-                elif uid in prop_map:
-                    continue
-                # Priority 3: Hard fallback for missing data
-                else:
-                    if uid in fallback_props:
-                        prop_map[uid] = fallback_props[uid]
-                    elif uid >= 4:
-                        prop_map[uid] = fallback_props[4]
-
-            # Re-export .nf for chfem with corrected properties
-            export_chfem_inputs(final_grid, basename, voxel_size, mode, prop_map)
-
-        # 4. Compute lightweight structure metrics directly from final_grid
-        if args.skip_structure_metrics:
-            structure_metrics = {
-                'contact_ratio': 0.0, 'tunneling_ratio': 0.0, 'connectivity_ratio': 0.0,
-                'n_contact_voxels': 0, 'n_tunnel_voxels': 0, 'n_filler_voxels': 0,
-                'n_conductive_candidate_voxels': 0, 'n_largest_cluster_voxels': 0, 'n_conductive_clusters': 0,
-            }
-        else:
-            structure_metrics = compute_structure_metrics(final_grid)
-        metric_fields = structure_metrics_to_csv_fields(structure_metrics)
-
-        # 5. Execute solvers and collect results (Task 4: Universal T-notation)
-        chfem_time = ""
-        chfem_results = [""] * 6
-        puma_time = ""
-        puma_results = [""] * 6
-
-        if args.solver in ["chfem", "both"]:
-            log_file = f"{basename}_metrics.txt"
-            subprocess.run(["chfem_exec", nf_file, raw_file, "-m", log_file])
-            res_diag, ctime = parse_chfem_log(log_file)
-            if res_diag[0] != "":
-                chfem_time, chfem_results = f"{ctime:.2f}", res_diag
-
-        if args.solver in ["puma", "both"]:
-            cond_map = {k: float(v.split()[0]) for k, v in prop_map.items()}
-            pkx, pky, pkz, ptime = run_puma_laplace(final_grid, voxel_size, mode, cond_map)
-            if pkx is not None:
-                puma_time = f"{ptime:.2f}"
-                puma_results = [pkx, pky, pkz, "", "", ""]
-
-        # 6. Update the row with new metrics
-        try:
-            row[header.index("chfem_Time_s")] = chfem_time
-            row[header.index("puma_Time_s")] = puma_time
-
-            # Map results to universal Txx, Tyy, Tzz, Tyz, Tzx, Txy columns
-            comp_suffixes = ["xx", "yy", "zz", "yz", "zx", "xy"]
-            for i, suffix in enumerate(comp_suffixes):
-                col_c = f"chfem_T{suffix}"
-                col_p = f"puma_T{suffix}"
-                if col_c in header:
-                    row[header.index(col_c)] = chfem_results[i]
-                if col_p in header:
-                    row[header.index(col_p)] = puma_results[i]
-
-            for col_name, value in metric_fields.items():
-                if col_name in header:
-                    row[header.index(col_name)] = value
-        except ValueError:
-            pass
-
-        rows[row_idx] = row
-
-        # Persist the current CSV state after each updated row.
-        # This preserves progressive saving without rebuilding from an empty file.
-        with open(args.csv_log, mode='w', newline='', encoding='utf-8') as out_f:
-            writer = csv.writer(out_f)
-            writer.writerow(header)
-            writer.writerows(rows)
-            out_f.flush()
-            os.fsync(out_f.fileno())
-
-    print(f"\n--- Recalculation Complete. Saved to {args.csv_log} ---")
-
-def run_puma_laplace(final_grid, voxel_size, physics_mode, cond_map):
-    """Solve the Laplace equation (thermal/electrical conduction) using PuMA's Python API"""
-    try:
-        import pumapy as puma
-    except ImportError:
-        print("Error: pumapy module not found. Cannot run PuMA solver.")
-        return None, None, None, 0.0
-
-    if physics_mode == 'mechanics':
-        print("Mechanics mode is currently routed to chfem only in this wrapper. Skipping PuMA.")
-        return None, None, None, 0.0
-
-    # Transpose dimensions: NumPy (Z, Y, X) -> PuMA Workspace (X, Y, Z)
-    ws = puma.Workspace.from_array(final_grid.transpose(2, 1, 0))
-    ws.voxel_length = voxel_size
-
-    puma_cond_map = puma.IsotropicConductivityMap()
-    for phase_id, cond_val in cond_map.items():
-        puma_cond_map.add_material((int(phase_id), int(phase_id)), float(cond_val))
-    puma_side_bc = "p"
-    puma_solver_type = "cg"
-    puma_maxiter = 20000
-
-    print("\n--- Running PuMA Solver ---")
-    t0 = time.time()
-
-    try:
-        # Compute for each XYZ direction (specify periodic boundary conditions with side_bc='p')
-        print("Computing X direction...")
-        res_x = puma.compute_thermal_conductivity(
-            ws, puma_cond_map, direction='x',
-            side_bc=puma_side_bc, solver_type=puma_solver_type, maxiter=puma_maxiter
-        )
-        k_eff_x = res_x[0] if isinstance(res_x, tuple) else res_x
-        txx = k_eff_x[0]
-        
-        print("Computing Y direction...")
-        res_y = puma.compute_thermal_conductivity(
-            ws, puma_cond_map, direction='y',
-            side_bc=puma_side_bc, solver_type=puma_solver_type, maxiter=puma_maxiter
-        )
-        k_eff_y = res_y[0] if isinstance(res_y, tuple) else res_y
-        tyy = k_eff_y[1]
-        
-        print("Computing Z direction...")
-        res_z = puma.compute_thermal_conductivity(
-            ws, puma_cond_map, direction='z',
-            side_bc=puma_side_bc, solver_type=puma_solver_type, maxiter=puma_maxiter
-        )
-        k_eff_z = res_z[0] if isinstance(res_z, tuple) else res_z
-        tzz = k_eff_z[2]
-        
-        total_time = time.time() - t0
-        print(f"PuMA computation completed in {total_time:.2f}s")
-        
-        return txx, tyy, tzz, total_time
-
-    except Exception as e:
-        print(f"PuMA encountered an error during computation: {e}")
-        return None, None, None, 0.0
-
-def save_thumbnail_png(grid, filename):
-    """
-    Save the Z-axis center slice as a PNG.
-    Capping values at 4 ensures that Filler 2 (ID 5) and beyond 
-    are colored identically to Filler 1 (ID 4).
-    """
-    num_phases = 5
-    vmin, vmax = -0.5, 4.5
-    custom_cmap = plt.get_cmap('viridis', num_phases)
-
-    z_mid = grid.shape[0] // 2
-    # Clip all filler IDs (4, 5, 6...) to 4 for consistent visualization
-    slice_img = np.clip(grid[z_mid, :, :], 0, 4)
-    
-    # Save the pure 2D array directly to a PNG file without any Matplotlib figure overhead
-    plt.imsave(filename, slice_img, cmap=custom_cmap, vmin=vmin, vmax=vmax, origin='upper')
-    print(f"Saved clean thumbnail: {filename}")
-
-def export_vtm_wrapper(vti_filepath, vtm_filepath):
-    """
-    Creates a lightweight VTM (MultiBlock) wrapper that references the original VTI file.
-    This safely bypasses ParaView's extent caching issue during volume rendering.
-    """
-    # Calculate relative path from 'pvd/' directory to the original VTI file (../file.vti)
-    rel_vti_path = f"../{os.path.basename(vti_filepath)}"
-    
-    vtm_content = f"""<?xml version="1.0"?>
-<VTKFile type="vtkMultiBlockDataSet" version="1.0" byte_order="LittleEndian">
-  <vtkMultiBlockDataSet>
-    <DataSet index="0" file="{rel_vti_path}"/>
-  </vtkMultiBlockDataSet>
-</VTKFile>
-"""
-    # Ensure the target directory exists
-    os.makedirs(os.path.dirname(vtm_filepath), exist_ok=True)
-    
-    with open(vtm_filepath, 'w', encoding='utf-8') as f:
-        f.write(vtm_content)
-
-def update_pvd_file(pvd_filepath, dataset_records):
-    """
-    Creates or updates a ParaView Data (.pvd) file to group VTM wrappers as a time-series.
-    This ensures ParaView correctly handles varying grid extents during deformation.
-    """
-    # Ensure the target directory exists
-    os.makedirs(os.path.dirname(pvd_filepath), exist_ok=True)
-    
-    with open(pvd_filepath, 'w', encoding='utf-8') as f:
-        f.write('<?xml version="1.0"?>\n')
-        f.write('<VTKFile type="Collection" version="0.1" byte_order="LittleEndian">\n')
-        f.write('  <Collection>\n')
-        
-        for timestep, filepath in dataset_records:
-            # Extract basename for the 'file' attribute.
-            # Since both PVD and VTM are in the 'pvd/' directory, only the filename is needed.
-            rel_filename = os.path.basename(filepath)
-            f.write(f'    <DataSet timestep="{timestep}" group="" part="0" file="{rel_filename}"/>\n')
-            
-        f.write('  </Collection>\n')
-        f.write('</VTKFile>\n')
-
-def export_common_legend(filename="common_legend.png"):
-    """
-    Exports a standalone legend image with fixed 5 phases.
-    Moving this outside the loop ensures consistency across all experiments.
-    """
-    if os.path.exists(filename):
-        return
-        
-    plt.rcParams.update({
-        'font.family': 'sans-serif',
-        'font.sans-serif': ['Arial', 'Liberation Sans', 'DejaVu Sans', 'sans-serif'],
-        'axes.labelsize': 12, 'ytick.labelsize': 12, 
-        'savefig.bbox': 'tight'
-    })
-
-    # Standardized 5 phases
-    ids = [0, 1, 2, 3, 4]
-    labels = ['Polymer A', 'Polymer B', 'Secondary Inter', 'Primary Inter', 'Filler']
-    num_phases = 5
-    
-    vmin, vmax = -0.5, 4.5
-    custom_cmap = plt.get_cmap('viridis', num_phases)
-
-    fig, ax = plt.subplots(figsize=(1.5, 4)) 
-    ax.axis('off')
-    
-    # Create a dummy ScalarMappable for the colorbar
-    sm = plt.cm.ScalarMappable(cmap=custom_cmap, norm=plt.Normalize(vmin=vmin, vmax=vmax))
-    sm.set_array([])
-    
-    cbar = fig.colorbar(sm, ax=ax, ticks=ids, fraction=1.0, pad=0.0)
-    cbar.ax.set_yticklabels(labels)
-    cbar.ax.set_title("Phase ID", pad=15, fontweight='bold')
-
-    plt.savefig(filename, dpi=200, transparent=False, facecolor='white')
-    plt.close(fig)
-    print(f"Saved common legend: {filename}")
+from pipeline.io_csv import (
+    ensure_structure_metric_columns,
+    parse_chfem_log,
+    structure_metrics_to_csv_fields,
+    upgrade_existing_csv_log,
+)
+from pipeline.recalc import run_recalculation_mode
+from pipeline.solver_puma import run_puma_elasticity, run_puma_laplace
+from pipeline.viz_export import (
+    export_common_legend,
+    export_vtm_wrapper,
+    save_thumbnail_png,
+    update_pvd_file,
+)
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -539,7 +125,7 @@ def main():
     if args.physics_mode == 'thermal':
         prop_A = args.prop_A or "0.3"
         prop_B = args.prop_B or "0.3"
-        prop_secondary_inter = args.prop_inter2 or "30.0" # Safe fallback even if not present in grid
+        prop_secondary_inter = args.prop_inter2 or "3.0"
         prop_primary_inter = args.prop_inter or "30.0"
         default_filler = "300.0"
     elif args.physics_mode == 'electrical':
@@ -549,11 +135,11 @@ def main():
         prop_primary_inter = args.prop_inter or "1e-1"
         default_filler = "1e4"
     else: # mechanics
-        prop_A = args.prop_A or "3.0 1.0"
-        prop_B = args.prop_B or "3.0 1.0"
-        prop_secondary_inter = args.prop_inter2 or "10.0 3.0"
-        prop_primary_inter = args.prop_inter or "15.0 5.0"
-        default_filler = "100.0 50.0"
+        prop_A = args.prop_A or "1.0 0.35"
+        prop_B = args.prop_B or "1.0 0.35"
+        prop_secondary_inter = args.prop_inter2 or "10.0 0.30"
+        prop_primary_inter = args.prop_inter or "100.0 0.25"
+        default_filler = "1000.0 0.20"
 
     # Count valid recipes
     valid_recipes = [r for r in args.recipe if float(r.split(':')[1]) > 0]
@@ -624,6 +210,10 @@ def main():
             k, v = p.split('=')
             if k == 'prop': 
                 opts[k] = v.replace('_', ' ')
+            # --- Vector parsing for orientation control ---
+            elif k == 'mean_dir':
+                opts[k] = [float(x) for x in v.split(',')]
+            # ----------------------------------------------
             else: 
                 # Parse numeric values robustly, handling scientific notation (e.g., 1e-3)
                 try:
@@ -650,13 +240,16 @@ def main():
             'physics_mode': args.physics_mode,
             'shell_count_grid': shell_count_grid,
             'filler_id': current_filler_id,
-            'inter_id': primary_inter_id, 
+            'inter_id': primary_inter_id,
             'tunnel_radius': args.tunnel_radius,
             'placement_registry': placement_registry
         }
         
         if f_type == "flake":
-            kwargs = {'radius': opts.get('radius', 10), 'thickness': opts.get('thickness', 2)}
+            kwargs = {
+                'radius': opts.get('radius', 10), 'thickness': opts.get('thickness', 2),
+                'mean_dir': opts.get('mean_dir', [0.0, 0.0, 1.0]), 'kappa': opts.get('kappa', 0.0)
+            }
             place_fillers_hybrid(filler_func=get_flake_mask, kwargs=kwargs, desc="Flake", **hybrid_args)
                                  
         elif f_type == "sphere":
@@ -664,9 +257,19 @@ def main():
             place_fillers_hybrid(filler_func=get_sphere_mask, kwargs=kwargs, desc="Sphere", **hybrid_args)
                                  
         elif f_type == "rigidfiber":
-            kwargs = {'length': opts.get('length', 60), 'radius': opts.get('radius', 2)}
+            kwargs = {
+                'length': opts.get('length', 60), 'radius': opts.get('radius', 2),
+                'mean_dir': opts.get('mean_dir', [0.0, 0.0, 1.0]), 'kappa': opts.get('kappa', 0.0)
+            }
             place_fillers_hybrid(filler_func=get_rigid_cylinder_mask, kwargs=kwargs, desc="Rigid Fiber", **hybrid_args)
             
+        elif f_type == "irregfiber":
+            kwargs = {
+                'length': opts.get('length', 60),
+                'shape_type': opts.get('shape', 'bean'), 'radius_max': opts.get('radius', 5), 'ratio': opts.get('ratio', 0.5),
+                'mean_dir': opts.get('mean_dir', [0.0, 0.0, 1.0]), 'kappa': opts.get('kappa', 0.0)
+            }
+            place_fillers_hybrid(filler_func=get_irregular_fiber_mask, kwargs=kwargs, desc="Irregular Fiber", **hybrid_args)
         elif f_type == "adaptfiber":
             # NOTE: adaptfiber is explicitly excluded from affine deformation support. 
             # It writes directly to comp_grid and is only evaluated at lambda=1.0.
@@ -831,12 +434,17 @@ def main():
                 chfem_time, chfem_results = f"{ctime:.2f}", res_diag
 
         if args.solver in ["puma", "both"]:
-            cond_map = {k: float(v) for k, v in prop_map.items()}
-            pkx, pky, pkz, ptime = run_puma_laplace(final_grid, args.voxel_size, args.physics_mode, cond_map)
-            if pkx is not None:
-                puma_time = f"{ptime:.2f}"
-                # PuMA (Laplace) only provides 3 diagonal components
-                puma_results = [pkx, pky, pkz, "", "", ""]
+            if args.physics_mode == 'mechanics':
+                puma_results, ptime = run_puma_elasticity(final_grid, args.voxel_size, prop_map)
+                if puma_results[0] is not None:
+                    puma_time = f"{ptime:.2f}"
+            else:
+                cond_map = {k: float(v.split()[0]) for k, v in prop_map.items()}
+                pkx, pky, pkz, ptime = run_puma_laplace(final_grid, args.voxel_size, args.physics_mode, cond_map)
+                if pkx is not None:
+                    puma_time = f"{ptime:.2f}"
+                    # PuMA (Laplace) only provides 3 diagonal components
+                    puma_results = [pkx, pky, pkz, "", "", ""]
 
         file_exists = os.path.isfile(args.csv_log)
         with open(args.csv_log, mode='a', newline='', encoding='utf-8') as f:
@@ -871,7 +479,6 @@ def main():
                 chfem_time, *chfem_results,
                 puma_time, *puma_results
             ])
-                
 
 if __name__ == "__main__":
     main()
