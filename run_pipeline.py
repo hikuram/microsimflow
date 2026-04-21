@@ -21,6 +21,7 @@ from micro_builder import (
     get_flake_mask,
     get_sphere_mask,
     get_rigid_cylinder_mask,
+    get_irregular_fiber_mask,
     get_flexible_fiber_mask,
     get_agglomerate_mask,
     get_staggered_flakes_mask,
@@ -235,7 +236,7 @@ def main():
             'physics_mode': args.physics_mode,
             'shell_count_grid': shell_count_grid,
             'filler_id': current_filler_id,
-            'inter_id': primary_inter_id, 
+            'inter_id': primary_inter_id,
             'tunnel_radius': args.tunnel_radius,
             'placement_registry': placement_registry
         }
@@ -251,6 +252,10 @@ def main():
         elif f_type == "rigidfiber":
             kwargs = {'length': opts.get('length', 60), 'radius': opts.get('radius', 2)}
             place_fillers_hybrid(filler_func=get_rigid_cylinder_mask, kwargs=kwargs, desc="Rigid Fiber", **hybrid_args)
+            
+        elif f_type == "irregfiber":
+            kwargs = {'length': opts.get('length', 60), 'shape_type': opts.get('shape', 'bean'), 'radius_max': opts.get('radius', 5), 'ratio': opts.get('ratio', 0.5)}
+            place_fillers_hybrid(filler_func=get_irregular_fiber_mask, kwargs=kwargs, desc="Irregular Fiber", **hybrid_args)
             
         elif f_type == "adaptfiber":
             # NOTE: adaptfiber is explicitly excluded from affine deformation support. 
@@ -461,7 +466,6 @@ def main():
                 chfem_time, *chfem_results,
                 puma_time, *puma_results
             ])
-
 
 if __name__ == "__main__":
     main()
