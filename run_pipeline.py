@@ -246,7 +246,10 @@ def main():
         }
         
         if f_type == "flake":
-            kwargs = {'radius': opts.get('radius', 10), 'thickness': opts.get('thickness', 2)}
+            kwargs = {
+                'radius': opts.get('radius', 10), 'thickness': opts.get('thickness', 2),
+                'mean_dir': opts.get('mean_dir', [0.0, 0.0, 1.0]), 'kappa': opts.get('kappa', 0.0)
+            }
             place_fillers_hybrid(filler_func=get_flake_mask, kwargs=kwargs, desc="Flake", **hybrid_args)
                                  
         elif f_type == "sphere":
@@ -254,17 +257,17 @@ def main():
             place_fillers_hybrid(filler_func=get_sphere_mask, kwargs=kwargs, desc="Sphere", **hybrid_args)
                                  
         elif f_type == "rigidfiber":
-            kwargs = {'length': opts.get('length', 60), 'radius': opts.get('radius', 2)}
+            kwargs = {
+                'length': opts.get('length', 60), 'radius': opts.get('radius', 2),
+                'mean_dir': opts.get('mean_dir', [0.0, 0.0, 1.0]), 'kappa': opts.get('kappa', 0.0)
+            }
             place_fillers_hybrid(filler_func=get_rigid_cylinder_mask, kwargs=kwargs, desc="Rigid Fiber", **hybrid_args)
             
         elif f_type == "irregfiber":
             kwargs = {
-                'length': opts.get('length', 60), 
-                'shape_type': opts.get('shape', 'bean'), 
-                'radius_max': opts.get('radius', 5), 
-                'ratio': opts.get('ratio', 0.5),
-                'mean_dir': opts.get('mean_dir', [0.0, 0.0, 1.0]),
-                'kappa': opts.get('kappa', 0.0)
+                'length': opts.get('length', 60),
+                'shape_type': opts.get('shape', 'bean'), 'radius_max': opts.get('radius', 5), 'ratio': opts.get('ratio', 0.5),
+                'mean_dir': opts.get('mean_dir', [0.0, 0.0, 1.0]), 'kappa': opts.get('kappa', 0.0)
             }
             place_fillers_hybrid(filler_func=get_irregular_fiber_mask, kwargs=kwargs, desc="Irregular Fiber", **hybrid_args)
         elif f_type == "adaptfiber":
