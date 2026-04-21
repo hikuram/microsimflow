@@ -339,20 +339,27 @@ def get_sphere_mask(radius, physics_mode='thermal'):
     }
     return cropped_mask, geom_data
 
-def get_flake_mask(radius, thickness, physics_mode='thermal'):
-    """Flake-shaped filler with Polar Decomposition support"""
+def get_flake_mask(radius, thickness, mean_dir=(0.0, 0.0, 1.0), kappa=0.0, physics_mode='thermal'):
+    """
+    Generate a flake-shaped filler (platelet) mask with Polar Decomposition support.
+    
+    Parameters:
+      radius (float): Radius of the flake.
+      thickness (float): Thickness of the flake.
+      mean_dir (tuple/list): Target orientation vector (normal to the flake surface).
+      kappa (float): vMF concentration parameter (0 = random, higher = strictly aligned).
+    """
     size = int(radius * 2 + 4)
-    angles = builder.rng.random(3) * 2 * np.pi
-    az, ay, ax = angles
-    R_orig = np.array([[math.cos(az), -math.sin(az), 0], [math.sin(az), math.cos(az), 0], [0, 0, 1]]) @ \
-             np.array([[math.cos(ay), 0, math.sin(ay)], [0, 1, 0], [-math.sin(ay), 0, math.cos(ay)]]) @ \
-             np.array([[1, 0, 0], [0, math.cos(ax), -math.sin(ax)], [0, math.sin(ax), math.cos(ax)]])
+    
+    # Apply vMF distribution for orientation control instead of isotropic random Euler angles
+    R_orig = get_oriented_rotation_matrix(mean_dir=mean_dir, kappa=kappa)
              
     Z, Y, X = np.indices((size, size, size))
     Z = Z - size//2; Y = Y - size//2; X = X - size//2
     rot = R_orig @ np.stack([Z.ravel(), Y.ravel(), X.ravel()])
     Zr, Yr, Xr = rot[0,:].reshape((size, size, size)), rot[1,:].reshape((size, size, size)), rot[2,:].reshape((size, size, size))
     
+    # Mask generation based on rotated coordinates
     mask = (Xr**2 + Yr**2 <= radius**2) & (np.abs(Zr) <= thickness/2)
     cm_global_abs = np.array([size//2, size//2, size//2], dtype=float)
     cropped_mask, offset = crop_and_standardize(mask, cm_global_abs)
@@ -436,12 +443,24 @@ def get_irregular_fiber_mask(length, shape_type='ellipse', radius_max=5.0, ratio
     }
     return cropped_mask, geom_data
 
-def get_rigid_cylinder_mask(length, radius, physics_mode='thermal'):
-    """Rigid short fiber matching exact original geometry but accelerated without binary_dilation"""
+def get_rigid_cylinder_mask(length, radius, mean_dir=(0.0, 0.0, 1.0), kappa=0.0, physics_mode='thermal'):
+    """
+    Generate a rigid short fiber matching the exact original geometry but accelerated 
+    without binary_dilation.
+    
+    Parameters:
+      length (float): Length of the fiber backbone.
+      radius (float): Cross-sectional radius of the fiber.
+      mean_dir (tuple/list): Target orientation vector for the fiber axis.
+      kappa (float): vMF concentration parameter (0 = random, higher = strictly aligned).
+    """
     box_size = int(length + radius * 2 + 5)
     mask = np.zeros((box_size, box_size, box_size), dtype=bool)
-    vec = builder.rng.standard_normal(3)
-    vec /= np.linalg.norm(vec)
+    
+    # Extract the Z-axis column from the vMF rotation matrix as the growth direction vector
+    R_vmf = get_oriented_rotation_matrix(mean_dir=mean_dir, kappa=kappa)
+    vec = R_vmf[:, 2] 
+    
     start_pos = np.array([box_size//2, box_size//2, box_size//2], dtype=float) - vec * (length / 2)
     
     kinematic_backbone = []
@@ -468,6 +487,8 @@ def get_rigid_cylinder_mask(length, radius, physics_mode='thermal'):
     
     geom_data = {
         'base_type': 'fiber', 'radius': radius,
+        # Rigid fibers encode orientation entirely within local_kinematics points, 
+        # so R_orig is kept as identity to prevent double-rotation during stretch rendering.
         'R_orig': np.eye(3).tolist(), 'local_kinematics': local_kinematics.tolist(),
         'offset_center_to_cm': offset.tolist()
     }
