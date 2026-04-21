@@ -39,6 +39,81 @@ def crop_and_standardize(mask, cm_global_abs):
     
     return cropped_mask, offset_center_to_cm
 
+
+# =========================================================
+# Mathematical Utilities for Kinematics & Orientation
+# =========================================================
+
+def get_oriented_rotation_matrix(mean_dir=(0.0, 0.0, 1.0), kappa=0.0):
+    """
+    Generate a 3x3 rotation matrix sampled from the von Mises-Fisher (vMF) distribution.
+    If kappa <= 0, it yields a completely isotropic (uniform) random rotation.
+    
+    Parameters:
+      mean_dir (tuple/list): The target mean direction vector.
+      kappa (float): Concentration parameter (0 = random, >0 = aligned to mean_dir).
+    """
+    # 1. Sample the Z-component (W)
+    if kappa <= 1e-5:
+        W = builder.rng.uniform(-1.0, 1.0)
+    else:
+        # Numerically stable inverse transform sampling (Avoids exp overflow for large kappa)
+        # W = 1 + (1/kappa) * ln( U + (1-U)*exp(-2*kappa) )
+        U = builder.rng.uniform(0.0, 1.0)
+        W = 1.0 + (1.0 / kappa) * np.log(U + (1.0 - U) * np.exp(-2.0 * kappa))
+        
+    # 2. Sample the azimuthal angle (Theta) uniformly
+    theta = builder.rng.uniform(0.0, 2.0 * np.pi)
+    
+    # 3. Generate the local vector aligned around the Z-axis
+    sin_W = np.sqrt(max(0.0, 1.0 - W**2))
+    v_z = np.array([sin_W * np.cos(theta), sin_W * np.sin(theta), W])
+    
+    # 4. Compute the rotation matrix to align the Z-axis with the specified mean_dir
+    m_dir = np.array(mean_dir, dtype=float)
+    m_norm = np.linalg.norm(m_dir)
+    if m_norm > 0:
+        m_dir /= m_norm
+    else:
+        m_dir = np.array([0.0, 0.0, 1.0])
+        
+    base_z = np.array([0.0, 0.0, 1.0])
+    v = np.cross(base_z, m_dir)
+    s = np.linalg.norm(v)
+    c = np.dot(base_z, m_dir)
+    
+    if s < 1e-8:
+        # Already aligned or exactly anti-aligned
+        R_align = np.eye(3) if c > 0 else np.diag([1, -1, -1])
+    else:
+        # Rodrigues' rotation formula
+        vX = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+        R_align = np.eye(3) + vX + (vX @ vX) * ((1.0 - c) / (s**2))
+        
+    actual_z = R_align @ v_z
+    
+    # 5. Build the final rotation from base_z to actual_z, adding a random roll twist
+    v2 = np.cross(base_z, actual_z)
+    s2 = np.linalg.norm(v2)
+    c2 = np.dot(base_z, actual_z)
+    
+    if s2 < 1e-8:
+        R_target = np.eye(3) if c2 > 0 else np.diag([1, -1, -1])
+    else:
+        vX2 = np.array([[0, -v2[2], v2[1]], [v2[2], 0, -v2[0]], [-v2[1], v2[0], 0]])
+        R_target = np.eye(3) + vX2 + (vX2 @ vX2) * ((1.0 - c2) / (s2**2))
+        
+    # The roll angle (cross-sectional twist) remains uniformly random
+    roll = builder.rng.uniform(0.0, 2.0 * np.pi)
+    R_roll = np.array([
+        [np.cos(roll), -np.sin(roll), 0],
+        [np.sin(roll),  np.cos(roll), 0],
+        [0, 0, 1]
+    ])
+    
+    return R_target @ R_roll
+
+
 # =========================================================
 # B. Rigid Stamp Module (Sphere, Flake, Rigid Cylinder, etc.)
 # =========================================================
@@ -295,7 +370,9 @@ def get_staggered_flakes_mask(radius=15, layer_thickness=2, min_layers=1, max_la
 def get_flexible_fiber_mask(length=90, radius=2, max_bend_deg=90, max_total_bends=10, physics_mode='thermal'):
     return create_fiber_mask(length, radius, max_bend_deg, max_total_bends)
 
-def get_irregular_fiber_mask(length, shape_type='bean', radius_max=5.0, ratio=0.5, physics_mode='thermal'):
+
+def get_irregular_fiber_mask(length, shape_type='ellipse', radius_max=5.0, ratio=0.5, 
+                             mean_dir=(0.0, 0.0, 1.0), kappa=0.0, physics_mode='thermal'):
     """
     Generate a rigid straight fiber with an irregular cross-section (Ellipse, Bean, or C-shape).
     
@@ -303,18 +380,14 @@ def get_irregular_fiber_mask(length, shape_type='bean', radius_max=5.0, ratio=0.
       shape_type (str): 'ellipse', 'bean', or 'c-shape'
       radius_max (float): Major radius for Ellipse, or Maximum outer radius for Bean/C-shape.
       ratio (float): A scaling factor (0.0 < ratio < 1.0) where radius_max is the denominator.
-        - ellipse: minor_radius / major_radius (Typical value: ~0.33)
-        - bean: min_outer_radius / max_outer_radius (Typical value: ~0.50)
-        - c-shape: inner_radius / outer_radius (Typical value: ~0.67)
+      mean_dir (tuple/list): Target orientation vector for the fiber axis.
+      kappa (float): vMF concentration parameter (0 = random, higher = strictly aligned).
     """
     # Create a sufficient bounding box to accommodate arbitrary 3D rotation
     box_size = int(length + radius_max * 2 + 5)
     
-    angles = builder.rng.random(3) * 2 * np.pi
-    az, ay, ax = angles
-    R_orig = np.array([[math.cos(az), -math.sin(az), 0], [math.sin(az), math.cos(az), 0], [0, 0, 1]]) @ \
-             np.array([[math.cos(ay), 0, math.sin(ay)], [0, 1, 0], [-math.sin(ay), 0, math.cos(ay)]]) @ \
-             np.array([[1, 0, 0], [0, math.cos(ax), -math.sin(ax)], [0, math.sin(ax), math.cos(ax)]])
+    # Apply vMF distribution for orientation control instead of isotropic random Euler angles
+    R_orig = get_oriented_rotation_matrix(mean_dir=mean_dir, kappa=kappa)
              
     Z, Y, X = np.indices((box_size, box_size, box_size))
     Z = Z - box_size//2; Y = Y - box_size//2; X = X - box_size//2
