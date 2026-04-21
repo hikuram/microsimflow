@@ -1076,10 +1076,8 @@ def _render_and_paste_kinematics(comp_grid, shell_count_grid, P_CM_new, F_mat, g
             effective_radius = geom['length'] / 2.0 + radius
         else:
             effective_radius = radius
-            
+        
         max_radius = effective_radius + 2
-        # Dynamic bounding box based on transformed geometry
-        max_radius = radius + 2
         min_b = np.floor(new_rel_global_centers.min(axis=0)).astype(int) - int(max_radius)
         max_b = np.ceil(new_rel_global_centers.max(axis=0)).astype(int) + int(max_radius)
         box_shape = tuple(max_b - min_b + 1)
