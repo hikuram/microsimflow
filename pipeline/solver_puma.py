@@ -108,7 +108,6 @@ def run_puma_elasticity(final_grid, voxel_size, prop_map):
 
     for uid in ws_unique_ids:
         uid_int = int(uid)
-
         if uid_int not in prop_map:
             raise KeyError(
                 f"Phase ID {uid_int} is missing in prop_map. "

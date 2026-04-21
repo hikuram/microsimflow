@@ -1,6 +1,5 @@
 import numpy as np
-from scipy.ndimage import convolve, label, generate_binary_structure
-import pyvista as pv
+from scipy.ndimage import binary_dilation, convolve, distance_transform_edt, generate_binary_structure, label
 
 # =========================================================
 # E. Final Structure Integration, Cleanup, and Aggregation
@@ -259,6 +258,8 @@ def export_visualization_vti(final_grid, filename="microstructure.vti", voxel_si
     Output the 3D grid in the optimal VTI format for ParaView.
     Embed physical dimensions (voxel_size) and metadata for HUD (metadata) in Field Data.
     """
+    import pyvista as pv
+
     grid = pv.ImageData()
     
     # NumPy (Z, Y, X) -> PyVista (X, Y, Z)

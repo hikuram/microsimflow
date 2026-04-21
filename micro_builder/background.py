@@ -1,5 +1,7 @@
 import numpy as np
 
+from . import builder
+
 # =========================================================
 # A. Background Phase (Polymer Matrix) Generation Module
 # =========================================================
@@ -85,7 +87,7 @@ def build_sea_island_grid(grid_size, island_radius=8, target_phaseA_ratio=0.7):
     # Random placement allowing overlap
     while placed_voxels < target_voxels and attempts < 100000:
         attempts += 1
-        cz, cy, cx = rng.integers(0, grid_size, size=3)
+        cz, cy, cx = builder.rng.integers(0, grid_size, size=3)
         t_coords = offsets + np.array([cz, cy, cx])
         tz, ty, tx = t_coords[:, 0] % grid_size, t_coords[:, 1] % grid_size, t_coords[:, 2] % grid_size
         

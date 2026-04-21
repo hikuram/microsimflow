@@ -1,17 +1,12 @@
 import math
+
 import numpy as np
-from scipy.linalg import polar
-from scipy.ndimage import affine_transform
-from tqdm.auto import tqdm
 from numba import njit
+from scipy.linalg import polar
+from scipy.ndimage import affine_transform, binary_dilation, generate_binary_structure
+from tqdm.auto import tqdm
 
-# --- Initialize global random number generator ---
-rng = np.random.default_rng()
-
-def set_random_seed(seed):
-    """Reinitialize the generator by fixing the seed externally"""
-    global rng
-    rng = np.random.default_rng(seed)
+from . import builder
     
 def crop_mask_to_bbox(mask):
     """Trim the margins of the mask and crop it with a bounding box"""
@@ -43,6 +38,7 @@ def crop_and_standardize(mask, cm_global_abs):
     offset_center_to_cm = cm_in_cropped - cropped_center
     
     return cropped_mask, offset_center_to_cm
+
 # =========================================================
 # B. Rigid Stamp Module (Sphere, Flake, Rigid Cylinder, etc.)
 # =========================================================
@@ -70,7 +66,7 @@ def create_fiber_mask(length, radius, max_bend_deg=90, max_total_bends=10):
     start_pos = np.array([box_size//2, box_size//2, box_size//2], dtype=float)
     backbone = [np.round(start_pos).astype(int)]
     current_pos = start_pos
-    vec = rng.standard_normal(3)
+    vec = builder.rng.standard_normal(3)
     vec /= np.linalg.norm(vec)
     bends_made = 0
 
@@ -78,9 +74,9 @@ def create_fiber_mask(length, radius, max_bend_deg=90, max_total_bends=10):
         next_pos_f = current_pos + vec
         next_pos_i = np.round(next_pos_f).astype(int)
         if any(p < radius or p >= box_size - radius for p in next_pos_i): break
-        if bends_made < max_total_bends and rng.random() < (max_total_bends / length):
-            angle_rad = np.radians(rng.uniform(10, max_bend_deg))
-            noise = rng.standard_normal(3)
+        if bends_made < max_total_bends and builder.rng.random() < (max_total_bends / length):
+            angle_rad = np.radians(builder.rng.uniform(10, max_bend_deg))
+            noise = builder.rng.standard_normal(3)
             noise -= noise.dot(vec) * vec
             if np.linalg.norm(noise) > 0:
                 noise /= np.linalg.norm(noise)
@@ -118,7 +114,7 @@ def create_agglomerate_mask(num_fibers, length, radius, max_bend_deg=90, max_tot
     
     for _ in range(num_fibers):
         fiber_mask, fiber_bb = _create_agglom_single_fiber_mask(length, radius, max_bend_deg, max_total_bends)
-        offset = np.round(rng.standard_normal(3) * start_radius).astype(int)
+        offset = np.round(builder.rng.standard_normal(3) * start_radius).astype(int)
         shifted_bb = np.array(fiber_bb) + offset
         all_backbones.append(shifted_bb)
         shift_z, shift_y, shift_x = offset
@@ -155,11 +151,11 @@ def create_agglomerate_mask(num_fibers, length, radius, max_bend_deg=90, max_tot
 
 def create_staggered_flakes_mask(radius=15, layer_thickness=2, min_layers=1, max_layers=4, max_offset_pct=20):
     """Generate a compound stamp of staggered platelets, rigorously standardizing its centroid."""
-    num_layers = rng.integers(min_layers, max_layers + 1)
+    num_layers = builder.rng.integers(min_layers, max_layers + 1)
     max_offset_px = radius * (max_offset_pct / 100.0)
     box_size = int(math.ceil((radius + num_layers * max_offset_px) * 2 + num_layers * layer_thickness)) + 4
     
-    angles = rng.random(3) * 2 * np.pi
+    angles = builder.rng.random(3) * 2 * np.pi
     az, ay, ax = angles
     R_orig = np.array([[math.cos(az), -math.sin(az), 0], [math.sin(az), math.cos(az), 0], [0, 0, 1]]) @ \
              np.array([[math.cos(ay), 0, math.sin(ay)], [0, 1, 0], [-math.sin(ay), 0, math.cos(ay)]]) @ \
@@ -174,9 +170,9 @@ def create_staggered_flakes_mask(radius=15, layer_thickness=2, min_layers=1, max
     cy, cx = 0.0, 0.0
     for i in range(num_layers):
         if i > 0:
-            angle = rng.uniform(0, 2 * np.pi)
-            cy += rng.uniform(0, max_offset_px) * np.sin(angle)
-            cx += rng.uniform(0, max_offset_px) * np.cos(angle)
+            angle = builder.rng.uniform(0, 2 * np.pi)
+            cy += builder.rng.uniform(0, max_offset_px) * np.sin(angle)
+            cx += builder.rng.uniform(0, max_offset_px) * np.cos(angle)
         z_c = - (num_layers * layer_thickness) / 2.0 + (i + 0.5) * layer_thickness
         local_centers.append([z_c, cy, cx])
         
@@ -210,7 +206,7 @@ def _create_agglom_single_fiber_mask(length, radius, max_bend_deg, max_total_ben
     straight_steps = int(max(3, length * 0.05))
     half_len_a = length // 2
     half_len_b = length - half_len_a
-    vec = rng.standard_normal(3)
+    vec = builder.rng.standard_normal(3)
     vec /= np.linalg.norm(vec)
     start_pos = center_pos
     
@@ -223,9 +219,9 @@ def _create_agglom_single_fiber_mask(length, radius, max_bend_deg, max_total_ben
         bend_prob = (max_total_bends / 2) / max(1, steps - straight_steps)
         for i in range(steps):
             if i >= straight_steps and bends < (max_total_bends / 2):
-                if rng.random() < bend_prob:
-                    angle_rad = np.radians(rng.uniform(20, max_bend_deg))
-                    noise = rng.standard_normal(3)
+                if builder.rng.random() < bend_prob:
+                    angle_rad = np.radians(builder.rng.uniform(20, max_bend_deg))
+                    noise = builder.rng.standard_normal(3)
                     noise -= noise.dot(v) * v
                     if np.linalg.norm(noise) > 0:
                         noise /= np.linalg.norm(noise)
@@ -271,7 +267,7 @@ def get_sphere_mask(radius, physics_mode='thermal'):
 def get_flake_mask(radius, thickness, physics_mode='thermal'):
     """Flake-shaped filler with Polar Decomposition support"""
     size = int(radius * 2 + 4)
-    angles = rng.random(3) * 2 * np.pi
+    angles = builder.rng.random(3) * 2 * np.pi
     az, ay, ax = angles
     R_orig = np.array([[math.cos(az), -math.sin(az), 0], [math.sin(az), math.cos(az), 0], [0, 0, 1]]) @ \
              np.array([[math.cos(ay), 0, math.sin(ay)], [0, 1, 0], [-math.sin(ay), 0, math.cos(ay)]]) @ \
@@ -303,7 +299,7 @@ def get_rigid_cylinder_mask(length, radius, physics_mode='thermal'):
     """Rigid short fiber matching exact original geometry but accelerated without binary_dilation"""
     box_size = int(length + radius * 2 + 5)
     mask = np.zeros((box_size, box_size, box_size), dtype=bool)
-    vec = rng.standard_normal(3)
+    vec = builder.rng.standard_normal(3)
     vec /= np.linalg.norm(vec)
     start_pos = np.array([box_size//2, box_size//2, box_size//2], dtype=float) - vec * (length / 2)
     
@@ -360,7 +356,7 @@ def grow_adaptive_fiber(tpms_grid, comp_grid, start_pos, length, overlap_mode,
     backbone = [start_pos]
     current_pos = np.array(start_pos, dtype=float)
     
-    vec = rng.standard_normal(3)
+    vec = builder.rng.standard_normal(3)
     vec /= np.linalg.norm(vec)
     
     bends_made = 0
@@ -422,11 +418,11 @@ def grow_adaptive_fiber(tpms_grid, comp_grid, start_pos, length, overlap_mode,
             step_success = False
             if bends_made < max_total_bends:
                 for _ in range(max_retries_per_step):
-                    angle_deg = rng.uniform(10, max_bend_deg)
+                    angle_deg = builder.rng.uniform(10, max_bend_deg)
                     
                     # Snap to "180-degree U-turn + side step" if 90 degrees or more
                     if angle_deg >= 90.0:
-                        noise = rng.standard_normal(3)
+                        noise = builder.rng.standard_normal(3)
                         u_ortho = noise - noise.dot(vec) * vec
                         if np.linalg.norm(u_ortho) == 0: continue
                         u_ortho /= np.linalg.norm(u_ortho)
@@ -461,7 +457,7 @@ def grow_adaptive_fiber(tpms_grid, comp_grid, start_pos, length, overlap_mode,
                     else:
                         # Normal bend of less than 90 degrees
                         angle_rad = np.radians(angle_deg)
-                        noise = rng.standard_normal(3)
+                        noise = builder.rng.standard_normal(3)
                         noise -= noise.dot(vec) * vec
                         if np.linalg.norm(noise) > 0:
                             noise /= np.linalg.norm(noise)
@@ -569,7 +565,7 @@ def place_adaptive_fibers(comp_grid, tpms_grid, target_vol_frac, length, radius,
             if not overlap_mode and consecutive_fails > 500:
                 overlap_mode = True
 
-            idx = rng.integers(0, num_valid_coords)
+            idx = builder.rng.integers(0, num_valid_coords)
             start_pos = (valid_z[idx], valid_y[idx], valid_x[idx])
 
             backbone = grow_adaptive_fiber(
@@ -747,7 +743,7 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
                 cache_reuse_count = 0
 
             # Pick a random valid coordinate
-            idx = rng.integers(0, num_valid_coords)
+            idx = builder.rng.integers(0, num_valid_coords)
             cz, cy, cx = valid_z[idx], valid_y[idx], valid_x[idx]
 
             # Execute Numba-optimized placement routine
@@ -818,6 +814,9 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
             f.write(log_text)
 
     return placed_voxels
+
+# =========================================================
+# F. Affine Deformation & Rendering Module
 # =========================================================
 
 def apply_background_deformation(grid, stretch_ratio=1.0, poisson_ratio=0.4):

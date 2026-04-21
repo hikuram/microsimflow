@@ -461,3 +461,7 @@ def main():
                 chfem_time, *chfem_results,
                 puma_time, *puma_results
             ])
+
+
+if __name__ == "__main__":
+    main()
