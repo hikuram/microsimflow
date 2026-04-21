@@ -210,6 +210,10 @@ def main():
             k, v = p.split('=')
             if k == 'prop': 
                 opts[k] = v.replace('_', ' ')
+            # --- Vector parsing for orientation control ---
+            elif k == 'mean_dir':
+                opts[k] = [float(x) for x in v.split(',')]
+            # ----------------------------------------------
             else: 
                 # Parse numeric values robustly, handling scientific notation (e.g., 1e-3)
                 try:
@@ -254,9 +258,15 @@ def main():
             place_fillers_hybrid(filler_func=get_rigid_cylinder_mask, kwargs=kwargs, desc="Rigid Fiber", **hybrid_args)
             
         elif f_type == "irregfiber":
-            kwargs = {'length': opts.get('length', 60), 'shape_type': opts.get('shape', 'bean'), 'radius_max': opts.get('radius', 5), 'ratio': opts.get('ratio', 0.5)}
+            kwargs = {
+                'length': opts.get('length', 60), 
+                'shape_type': opts.get('shape', 'bean'), 
+                'radius_max': opts.get('radius', 5), 
+                'ratio': opts.get('ratio', 0.5),
+                'mean_dir': opts.get('mean_dir', [0.0, 0.0, 1.0]),
+                'kappa': opts.get('kappa', 0.0)
+            }
             place_fillers_hybrid(filler_func=get_irregular_fiber_mask, kwargs=kwargs, desc="Irregular Fiber", **hybrid_args)
-            
         elif f_type == "adaptfiber":
             # NOTE: adaptfiber is explicitly excluded from affine deformation support. 
             # It writes directly to comp_grid and is only evaluated at lambda=1.0.
