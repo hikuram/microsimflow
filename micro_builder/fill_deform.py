@@ -295,6 +295,74 @@ def get_staggered_flakes_mask(radius=15, layer_thickness=2, min_layers=1, max_la
 def get_flexible_fiber_mask(length=90, radius=2, max_bend_deg=90, max_total_bends=10, physics_mode='thermal'):
     return create_fiber_mask(length, radius, max_bend_deg, max_total_bends)
 
+def get_irregular_fiber_mask(length, shape_type='bean', radius_max=5.0, ratio=0.5, physics_mode='thermal'):
+    """
+    Generate a rigid straight fiber with an irregular cross-section (Ellipse, Bean, or C-shape).
+    
+    Parameters:
+      shape_type (str): 'ellipse', 'bean', or 'c-shape'
+      radius_max (float): Major radius for Ellipse, or Maximum outer radius for Bean/C-shape.
+      ratio (float): A scaling factor (0.0 < ratio < 1.0) where radius_max is the denominator.
+        - ellipse: minor_radius / major_radius (Typical value: ~0.33)
+        - bean: min_outer_radius / max_outer_radius (Typical value: ~0.50)
+        - c-shape: inner_radius / outer_radius (Typical value: ~0.67)
+    """
+    # Create a sufficient bounding box to accommodate arbitrary 3D rotation
+    box_size = int(length + radius_max * 2 + 5)
+    
+    angles = builder.rng.random(3) * 2 * np.pi
+    az, ay, ax = angles
+    R_orig = np.array([[math.cos(az), -math.sin(az), 0], [math.sin(az), math.cos(az), 0], [0, 0, 1]]) @ \
+             np.array([[math.cos(ay), 0, math.sin(ay)], [0, 1, 0], [-math.sin(ay), 0, math.cos(ay)]]) @ \
+             np.array([[1, 0, 0], [0, math.cos(ax), -math.sin(ax)], [0, math.sin(ax), math.cos(ax)]])
+             
+    Z, Y, X = np.indices((box_size, box_size, box_size))
+    Z = Z - box_size//2; Y = Y - box_size//2; X = X - box_size//2
+    rot = R_orig @ np.stack([Z.ravel(), Y.ravel(), X.ravel()])
+    Zr, Yr, Xr = rot[0,:].reshape((box_size, box_size, box_size)), rot[1,:].reshape((box_size, box_size, box_size)), rot[2,:].reshape((box_size, box_size, box_size))
+    
+    # Common longitudinal mask along the local Z-axis
+    z_mask = np.abs(Zr) <= length / 2.0
+    
+    if shape_type == 'ellipse':
+        r_min = radius_max * ratio
+        xy_mask = (Xr**2 / radius_max**2 + Yr**2 / r_min**2 <= 1)
+        
+    elif shape_type == 'bean':
+        r_min = radius_max * ratio
+        # Bend the X direction proportionally to the square of Y (Mathematical model for Kidney/Bean shape)
+        X_w = Xr - 0.5 * (Yr**2 / radius_max)
+        xy_mask = (X_w**2 / r_min**2 + Yr**2 / radius_max**2 <= 1)
+        
+    elif shape_type == 'c-shape':
+        r_in = radius_max * ratio
+        r2 = Xr**2 + Yr**2
+        angle = np.arctan2(Yr, Xr)
+        # Literal 'C' shape to allow polymer/filler packing inside.
+        # 120-degree opening (cut out ±60 degrees), resulting in a typical 240-degree wrap.
+        xy_mask = (r2 <= radius_max**2) & (r2 >= r_in**2) & (np.abs(angle) > np.radians(60))
+        
+    else:
+        raise ValueError(f"Unknown shape_type: {shape_type}")
+        
+    mask = xy_mask & z_mask
+    
+    cm_global_abs = np.array([box_size//2, box_size//2, box_size//2], dtype=float)
+    cropped_mask, offset = crop_and_standardize(mask, cm_global_abs)
+    
+    geom_data = {
+        'base_type': 'irregular_fiber', 
+        'shape_type': shape_type,
+        'length': length,
+        'radius_max': radius_max, 
+        'ratio': ratio,
+        'radius': radius_max, # Required for dynamic bounding box calculations
+        'R_orig': R_orig.tolist(), 
+        'local_kinematics': [[0.0, 0.0, 0.0]], 
+        'offset_center_to_cm': offset.tolist()
+    }
+    return cropped_mask, geom_data
+
 def get_rigid_cylinder_mask(length, radius, physics_mode='thermal'):
     """Rigid short fiber matching exact original geometry but accelerated without binary_dilation"""
     box_size = int(length + radius * 2 + 5)
@@ -901,14 +969,21 @@ def _render_and_paste_kinematics(comp_grid, shell_count_grid, P_CM_new, F_mat, g
     radius = geom['radius']
     local_kinematics = geom['local_kinematics']
 
-    if base_type in ['flake', 'staggered']:
+    if base_type in ['flake', 'staggered', 'irregular_fiber']:
         # Extract pure rigid-body rotation (Polar Decomposition)
         R_local_to_global = R_orig.T
         R_pure_local_to_global, _ = polar(F_mat @ R_local_to_global)
 
         loc_pts = np.array(local_kinematics)
         new_rel_global_centers = (R_pure_local_to_global @ loc_pts.T).T
-
+        
+        # Dynamic bounding box based on transformed geometry
+        if base_type == 'irregular_fiber':
+            effective_radius = geom['length'] / 2.0 + radius
+        else:
+            effective_radius = radius
+            
+        max_radius = effective_radius + 2
         # Dynamic bounding box based on transformed geometry
         max_radius = radius + 2
         min_b = np.floor(new_rel_global_centers.min(axis=0)).astype(int) - int(max_radius)
@@ -934,6 +1009,39 @@ def _render_and_paste_kinematics(comp_grid, shell_count_grid, P_CM_new, F_mat, g
             thickness = geom['thickness']
             z_c, y_c, x_c = local_kinematics[0]
             mask |= ((X_loc - x_c)**2 + (Y_loc - y_c)**2 <= radius**2) & (np.abs(Z_loc - z_c) <= thickness / 2.0)
+
+        # --- Render mathematical Boolean masks for Irregular Fibers ---
+        elif base_type == 'irregular_fiber':
+            length = geom['length']
+            shape_type = geom['shape_type']
+            r_max = geom['radius_max']
+            ratio = geom['ratio']
+            z_c, y_c, x_c = local_kinematics[0]
+            
+            Z_rel = Z_loc - z_c
+            Y_rel = Y_loc - y_c
+            X_rel = X_loc - x_c
+            
+            z_mask = np.abs(Z_rel) <= length / 2.0
+            
+            if shape_type == 'ellipse':
+                r_min = r_max * ratio
+                xy_mask = (X_rel**2 / r_max**2 + Y_rel**2 / r_min**2 <= 1)
+                
+            elif shape_type == 'bean':
+                r_min = r_max * ratio
+                # Bend the X direction proportionally to the square of Y (Kidney/Bean shape)
+                X_w = X_rel - 0.5 * (Y_rel**2 / r_max)
+                xy_mask = (X_w**2 / r_min**2 + Y_rel**2 / r_max**2 <= 1)
+                
+            elif shape_type == 'c-shape':
+                r_in = r_max * ratio
+                r2 = X_rel**2 + Y_rel**2
+                angle = np.arctan2(Y_rel, X_rel)
+                # 120-degree opening (cut out ±60 degrees)
+                xy_mask = (r2 <= r_max**2) & (r2 >= r_in**2) & (np.abs(angle) > np.radians(60))
+                
+            mask |= (xy_mask & z_mask)
 
         coords_nz = np.argwhere(mask > 0)
         if len(coords_nz) == 0: return
