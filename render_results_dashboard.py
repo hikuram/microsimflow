@@ -839,7 +839,7 @@ body.col-resize-active * {
           <section class=\"panel\">
             <div class=\"panel-header\">
               <h3>Columns</h3>
-              <p>Hide columns or pin them to the left side of the table. Drag a header divider in the dashboard to resize a visible column.</p>
+              <p>Hide columns or pin them to the left side of the table.</p>
             </div>
             <div class=\"panel-body\">
               <div class=\"legend-row spaced\">
