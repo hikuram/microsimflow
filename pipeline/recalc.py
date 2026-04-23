@@ -111,45 +111,53 @@ def run_recalculation_mode(args):
         metric_fields = structure_metrics_to_csv_fields(structure_metrics)
 
         # 5. Execute solvers and collect results (Task 4: Universal T-notation)
-        chfem_time = ""
-        chfem_results = [""] * 6
-        puma_time = ""
-        puma_results = [""] * 6
+        comp_suffixes = ["xx", "yy", "zz", "yz", "zx", "xy"]
 
         if args.solver in ["chfem", "both"]:
             log_file = f"{basename}_metrics.txt"
             subprocess.run(["chfem_exec", nf_file, raw_file, "-m", log_file])
             res_diag, ctime = parse_chfem_log(log_file)
             if res_diag[0] != "":
-                chfem_time, chfem_results = f"{ctime:.2f}", res_diag
-
+                try:
+                    if "chfem_Time_s" in header:
+                        row[header.index("chfem_Time_s")] = f"{ctime:.2f}"
+                    for i, suffix in enumerate(comp_suffixes):
+                        col_c = f"chfem_T{suffix}"
+                        if col_c in header:
+                            row[header.index(col_c)] = res_diag[i]
+                except ValueError:
+                    pass
+                    
         if args.solver in ["puma", "both"]:
             if mode == 'mechanics':
                 puma_results, ptime = run_puma_elasticity(final_grid, voxel_size, prop_map)
                 if puma_results[0] is not None:
-                    puma_time = f"{ptime:.2f}"
+                    try:
+                        if "puma_Time_s" in header:
+                            row[header.index("puma_Time_s")] = f"{ptime:.2f}"
+                        for i, suffix in enumerate(comp_suffixes):
+                            col_p = f"puma_T{suffix}"
+                            if col_p in header:
+                                row[header.index(col_p)] = puma_results[i]
+                    except ValueError:
+                        pass
             else:
                 cond_map = {k: float(v.split()[0]) for k, v in prop_map.items()}
                 pkx, pky, pkz, ptime = run_puma_laplace(final_grid, voxel_size, mode, cond_map)
                 if pkx is not None:
-                    puma_time = f"{ptime:.2f}"
-                    puma_results = [pkx, pky, pkz, "", "", ""]
+                    try:
+                        if "puma_Time_s" in header:
+                            row[header.index("puma_Time_s")] = f"{ptime:.2f}"
+                        puma_results = [pkx, pky, pkz, "", "", ""]
+                        for i, suffix in enumerate(comp_suffixes):
+                            col_p = f"puma_T{suffix}"
+                            if col_p in header:
+                                row[header.index(col_p)] = puma_results[i]
+                    except ValueError:
+                        pass
 
         # 6. Update the row with new metrics
         try:
-            row[header.index("chfem_Time_s")] = chfem_time
-            row[header.index("puma_Time_s")] = puma_time
-
-            # Map results to universal Txx, Tyy, Tzz, Tyz, Tzx, Txy columns
-            comp_suffixes = ["xx", "yy", "zz", "yz", "zx", "xy"]
-            for i, suffix in enumerate(comp_suffixes):
-                col_c = f"chfem_T{suffix}"
-                col_p = f"puma_T{suffix}"
-                if col_c in header:
-                    row[header.index(col_c)] = chfem_results[i]
-                if col_p in header:
-                    row[header.index(col_p)] = puma_results[i]
-
             for col_name, value in metric_fields.items():
                 if col_name in header:
                     row[header.index(col_name)] = value
