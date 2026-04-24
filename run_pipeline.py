@@ -300,7 +300,8 @@ def main():
             kwargs = {
                 'radius': opts.get('radius', 15), 'layer_thickness': opts.get('layer_thickness', 2),
                 'min_layers': opts.get('min_layers', 1), 'max_layers': opts.get('max_layers', 4),
-                'max_offset_pct': opts.get('max_offset_pct', 30)
+                'max_offset_pct': opts.get('max_offset_pct', 30),
+                'mean_dir': opts.get('mean_dir', [0.0, 0.0, 1.0]), 'kappa': opts.get('kappa', 0.0)
             }
             place_fillers_hybrid(filler_func=get_staggered_flakes_mask, kwargs=kwargs, desc="Staggered Flakes", **hybrid_args)
 
