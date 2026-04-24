@@ -21,7 +21,7 @@ import html
 import json
 import math
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 import pandas as pd
 
@@ -55,6 +55,7 @@ DEFAULT_COLUMN_CANDIDATES: List[str] = [
     "N_Tunnel_Voxels",
     "chfem_Time_s",
     "puma_Time_s",
+    "Slice_Image",
 ]
 
 FIXED_BAR_KEYWORDS: Tuple[str, ...] = ("frac",)
@@ -255,6 +256,11 @@ button, input {
   stroke-width: 1.8;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+.icon-btn.copied {
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .table-wrap {
@@ -515,6 +521,98 @@ body.col-resize-active * {
   overflow: hidden;
   text-overflow: ellipsis;
   vertical-align: middle;
+}
+
+.image-cell-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+}
+
+.image-cell-chip svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.image-cell-label {
+  display: inline-block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
+
+.image-preview-shell {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  display: none;
+  z-index: 95;
+  pointer-events: none;
+}
+
+.image-preview-shell.open {
+  display: block;
+}
+
+.image-preview-modal {
+  width: min(360px, 42vw);
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--grid);
+  border-radius: 14px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.image-preview-header {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--grid);
+  background: var(--panel-2);
+}
+
+.image-preview-title {
+  display: inline-block;
+  max-width: 100%;
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.image-preview-body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 120px;
+  max-height: 280px;
+  padding: 10px;
+  background: var(--panel);
+}
+
+.image-preview-img {
+  max-width: 340px;
+  max-height: 260px;
+  display: none;
+  object-fit: contain;
+  border-radius: 8px;
+}
+
+.image-preview-status {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .modal-shell {
@@ -807,6 +905,7 @@ body.col-resize-active * {
       <div class=\"summary-row\" id=\"summary-row\"></div>
     </div>
     <div class=\"toolbar\">
+      <button type=\"button\" id=\"copy-btn\" class=\"icon-btn\" title=\"Copy visible table as TSV\" aria-label=\"Copy visible table as TSV\"></button>
       <button type=\"button\" id=\"settings-btn\" class=\"icon-btn\" title=\"Settings\" aria-label=\"Settings\"></button>
       <button type=\"button\" id=\"theme-btn\" class=\"icon-btn\" title=\"Toggle theme\" aria-label=\"Toggle theme\"></button>
     </div>
@@ -816,6 +915,18 @@ body.col-resize-active * {
       <thead id=\"dashboard-head\"></thead>
       <tbody id=\"dashboard-body\"></tbody>
     </table>
+  </div>
+</div>
+
+<div id=\"image-preview-shell\" class=\"image-preview-shell\" aria-hidden=\"true\">
+  <div class=\"image-preview-modal\">
+    <div class=\"image-preview-header\">
+      <span id=\"image-preview-title\" class=\"image-preview-title\"></span>
+    </div>
+    <div class=\"image-preview-body\">
+      <img id=\"image-preview-img\" class=\"image-preview-img\" alt=\"Image preview\">
+      <div id=\"image-preview-status\" class=\"image-preview-status\"></div>
+    </div>
   </div>
 </div>
 
@@ -874,7 +985,10 @@ body.col-resize-active * {
   const icons = {
     settings: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.1 2.4 2.6.4-1.9 1.8.5 2.6L12 9.2 9.7 10.2l.5-2.6-1.9-1.8 2.6-.4L12 3z"></path><path d="M4 13.5h6"></path><path d="M14 13.5h6"></path><path d="M7 17.5h10"></path></svg>',
     moon: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"></path></svg>',
-    sun: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2.5v2.5"></path><path d="M12 19v2.5"></path><path d="M2.5 12H5"></path><path d="M19 12h2.5"></path><path d="M5 5l1.8 1.8"></path><path d="M17.2 17.2L19 19"></path><path d="M19 5l-1.8 1.8"></path><path d="M5 19l1.8-1.8"></path></svg>'
+    sun: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2.5v2.5"></path><path d="M12 19v2.5"></path><path d="M2.5 12H5"></path><path d="M19 12h2.5"></path><path d="M5 5l1.8 1.8"></path><path d="M17.2 17.2L19 19"></path><path d="M19 5l-1.8 1.8"></path><path d="M5 19l1.8-1.8"></path></svg>',
+    copy: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"></path></svg>',
+    check: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.2 4.2L19 7"></path></svg>',
+    image: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"></rect><circle cx="9" cy="10" r="1.5"></circle><path d="M21 16l-5-5-6 6-2-2-5 5"></path></svg>'
   };
 
   const payload = JSON.parse(document.getElementById('dashboard-data').textContent);
@@ -882,9 +996,14 @@ body.col-resize-active * {
   const rows = payload.rows;
   const totalRows = rows.length;
 
+  const copyBtn = document.getElementById('copy-btn');
   const settingsBtn = document.getElementById('settings-btn');
   const themeBtn = document.getElementById('theme-btn');
   const modal = document.getElementById('settings-modal');
+  const imagePreviewShell = document.getElementById('image-preview-shell');
+  const imagePreviewTitle = document.getElementById('image-preview-title');
+  const imagePreviewImg = document.getElementById('image-preview-img');
+  const imagePreviewStatus = document.getElementById('image-preview-status');
   const closeSettingsBtn = document.getElementById('close-settings-btn');
   const clearFiltersBtn = document.getElementById('clear-filters-btn');
   const hideAllBtn = document.getElementById('hide-all-btn');
@@ -899,6 +1018,7 @@ body.col-resize-active * {
   const rowsSummaryChip = document.getElementById('rows-summary-chip');
   const filtersSummaryChip = document.getElementById('filters-summary-chip');
 
+  copyBtn.innerHTML = icons.copy;
   settingsBtn.innerHTML = icons.settings;
 
   const state = {
@@ -908,10 +1028,17 @@ body.col-resize-active * {
     visible: {},
     pinned: {},
     filters: {},
-    columnWidths: {}
+    columnWidths: {},
+    lastOrderedColumns: [],
+    lastSortedRows: []
   };
 
+  const imageLoadState = {};
   let activeResize = null;
+  let copyFeedbackTimer = null;
+  let activePreviewPath = null;
+  let activePreviewX = 16;
+  let activePreviewY = 16;
 
   function initializeState() {
     columns.forEach((col) => {
@@ -985,6 +1112,156 @@ body.col-resize-active * {
       return value.toFixed(4);
     }
     return String(raw);
+  }
+
+  function getDisplayLabelForImage(value) {
+    const raw = String(value || '');
+    if (!raw) {
+      return '';
+    }
+    const parts = raw.split(/[\\/]/);
+    return parts[parts.length - 1] || raw;
+  }
+
+  function sanitizeTsvValue(value) {
+    return String(value === null || value === undefined ? '' : value).replace(/[\\t\\r\\n]+/g, ' ');
+  }
+
+  function updateCopyButtonState(copied) {
+    if (!copyBtn) {
+      return;
+    }
+    copyBtn.innerHTML = copied ? icons.check : icons.copy;
+    copyBtn.classList.toggle('copied', !!copied);
+    copyBtn.title = copied ? 'Copied visible table as TSV' : 'Copy visible table as TSV';
+    copyBtn.setAttribute('aria-label', copyBtn.title);
+  }
+
+  function hideImagePreview() {
+    activePreviewPath = null;
+    imagePreviewShell.classList.remove('open');
+    imagePreviewShell.setAttribute('aria-hidden', 'true');
+  }
+
+  function positionImagePreview(clientX, clientY) {
+    activePreviewX = clientX;
+    activePreviewY = clientY;
+
+    const margin = 18;
+    const gap = 18;
+    const modalWidth = 360;
+    const modalHeight = 320;
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+
+    let left = clientX + gap;
+    let top = clientY + gap;
+
+    if (left + modalWidth > viewportWidth - margin) {
+      left = Math.max(margin, clientX - modalWidth - gap);
+    }
+    if (top + modalHeight > viewportHeight - margin) {
+      top = Math.max(margin, viewportHeight - modalHeight - margin);
+    }
+
+    imagePreviewShell.style.left = Math.round(left) + 'px';
+    imagePreviewShell.style.top = Math.round(top) + 'px';
+  }
+
+  function applyImagePreviewState(src) {
+    const status = imageLoadState[src];
+    imagePreviewImg.style.display = 'none';
+    imagePreviewStatus.style.display = 'block';
+    if (status === 'loaded') {
+      imagePreviewImg.src = src;
+      imagePreviewImg.style.display = 'block';
+      imagePreviewStatus.style.display = 'none';
+      return;
+    }
+    if (status === 'failed') {
+      imagePreviewStatus.textContent = 'Preview unavailable';
+      return;
+    }
+    imagePreviewStatus.textContent = 'Loading preview...';
+  }
+
+  function showImagePreview(src, label, clientX, clientY) {
+    const path = String(src || '').trim();
+    if (!path) {
+      hideImagePreview();
+      return;
+    }
+    activePreviewPath = path;
+    imagePreviewTitle.textContent = label || path;
+    positionImagePreview(clientX, clientY);
+    imagePreviewShell.classList.add('open');
+    imagePreviewShell.setAttribute('aria-hidden', 'false');
+
+    const status = imageLoadState[path];
+    if (status === 'loaded' || status === 'failed') {
+      applyImagePreviewState(path);
+      return;
+    }
+
+    imageLoadState[path] = 'pending';
+    imagePreviewStatus.textContent = 'Loading preview...';
+    imagePreviewStatus.style.display = 'block';
+    imagePreviewImg.style.display = 'none';
+
+    const probe = new Image();
+    probe.onload = function () {
+      imageLoadState[path] = 'loaded';
+      if (activePreviewPath === path) {
+        applyImagePreviewState(path);
+      }
+    };
+    probe.onerror = function () {
+      imageLoadState[path] = 'failed';
+      if (activePreviewPath === path) {
+        applyImagePreviewState(path);
+      }
+    };
+    probe.src = path;
+  }
+
+  function copyTextToClipboard(textValue) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(textValue);
+    }
+    return new Promise((resolve, reject) => {
+      try {
+        const area = document.createElement('textarea');
+        area.value = textValue;
+        area.setAttribute('readonly', 'readonly');
+        area.style.position = 'fixed';
+        area.style.opacity = '0';
+        document.body.appendChild(area);
+        area.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(area);
+        if (ok) {
+          resolve();
+        } else {
+          reject(new Error('copy failed'));
+        }
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  function buildVisibleTableTsv() {
+    const orderedColumns = state.lastOrderedColumns || [];
+    const sortedRows = state.lastSortedRows || [];
+    if (!orderedColumns.length) {
+      return '';
+    }
+    const lines = [];
+    lines.push(orderedColumns.map((col) => sanitizeTsvValue(col.name)).join('\\t'));
+    sortedRows.forEach((row) => {
+      lines.push(orderedColumns.map((col) => sanitizeTsvValue(row[col.name])).join('\\t'));
+    });
+    return lines.join('\\n');
   }
 
   function normalizeBar(raw, column) {
@@ -1161,12 +1438,12 @@ body.col-resize-active * {
 
   function getMinColumnWidth(column) {
     if (column.bar) {
-      return 112;
+      return 105;
     }
     if (column.is_numeric) {
-      return 92;
+      return 90;
     }
-    return 120;
+    return 60;
   }
 
   function getColumnWidth(column) {
@@ -1343,7 +1620,12 @@ body.col-resize-active * {
     }
 
     let content = '<span class="cell-text">' + escapeHtml(display) + '</span>';
-    if (column.name.toLowerCase() === 'basename' && title.indexOf('/') !== -1) {
+    let extraAttrs = '';
+    if (column.is_image && title) {
+      const imageLabel = getDisplayLabelForImage(title);
+      content = '<span class="image-cell-chip"><span class="image-cell-label">' + escapeHtml(imageLabel) + '</span>' + icons.image + '</span>';
+      extraAttrs = ' data-image-preview="' + escapeHtml(title) + '"';
+    } else if (column.name.toLowerCase() === 'basename' && title.indexOf('/') !== -1) {
       const shortName = title.split('/').pop();
       content = '<span class="cell-text">' + escapeHtml(shortName) + '</span>';
     } else if (column.is_categorical && display) {
@@ -1351,7 +1633,7 @@ body.col-resize-active * {
       content = '<span class="badge badge-' + badgeIndex + '">' + escapeHtml(display) + '</span>';
     }
 
-    return '<td class="' + classes.join(' ') + '" title="' + escapeHtml(title) + '">' + content + '</td>';
+    return '<td class="' + classes.join(' ') + '" title="' + escapeHtml(title) + '"' + extraAttrs + '>' + content + '</td>';
   }
 
   function renderBody(orderedColumns, sortedRows) {
@@ -1364,6 +1646,24 @@ body.col-resize-active * {
       return '<tr>' + cells + '</tr>';
     });
     body.innerHTML = rowsHtml.join('');
+  }
+
+  function attachImagePreviewHandlers() {
+    body.querySelectorAll('td[data-image-preview]').forEach((cell) => {
+      const src = cell.getAttribute('data-image-preview');
+      const label = getDisplayLabelForImage(src);
+      cell.addEventListener('mouseenter', (event) => {
+        showImagePreview(src, label, event.clientX, event.clientY);
+      });
+      cell.addEventListener('mousemove', (event) => {
+        if (activePreviewPath === src) {
+          positionImagePreview(event.clientX, event.clientY);
+        }
+      });
+      cell.addEventListener('mouseleave', () => {
+        hideImagePreview();
+      });
+    });
   }
 
   function updatePinnedOffsets() {
@@ -1403,7 +1703,7 @@ body.col-resize-active * {
 
   function buildColumnControls() {
     const columnItems = columns.map((col) => {
-      const typeLabel = col.is_numeric ? 'numeric' : 'text';
+      const typeLabel = col.is_image ? 'image' : (col.is_numeric ? 'numeric' : 'text');
       return '<div class="column-row">'
         + '<div class="column-name"><strong>' + escapeHtml(col.name) + '</strong><span class="meta-note">' + typeLabel + (col.bar ? ' | data bar' : '') + '</span></div>'
         + '<label class="toggle-wrap"><input type="checkbox" data-visible-column="' + escapeHtml(col.name) + '">Visible</label>'
@@ -1519,15 +1819,19 @@ body.col-resize-active * {
     const orderedColumns = getOrderedVisibleColumns();
     const filteredRows = getFilteredRows();
     const sortedRows = getSortedRows(filteredRows);
+    state.lastOrderedColumns = orderedColumns.slice();
+    state.lastSortedRows = sortedRows.slice();
     if (!orderedColumns.length) {
       head.innerHTML = '';
       body.innerHTML = '<tr><td class="no-data" colspan="1">No visible columns selected. Re-enable columns in settings.</td></tr>';
+      hideImagePreview();
       renderSummary(filteredRows.length);
       syncControlState();
       return;
     }
     renderHeader(orderedColumns);
     renderBody(orderedColumns, sortedRows);
+    attachImagePreviewHandlers();
     updatePinnedOffsets();
     renderSummary(filteredRows.length);
     syncControlState();
@@ -1550,6 +1854,21 @@ body.col-resize-active * {
   }
 
   settingsBtn.addEventListener('click', openModal);
+  copyBtn.addEventListener('click', () => {
+    const tsv = buildVisibleTableTsv();
+    if (!tsv) {
+      return;
+    }
+    copyTextToClipboard(tsv).then(() => {
+      updateCopyButtonState(true);
+      if (copyFeedbackTimer) {
+        window.clearTimeout(copyFeedbackTimer);
+      }
+      copyFeedbackTimer = window.setTimeout(() => {
+        updateCopyButtonState(false);
+      }, 1200);
+    }).catch(() => {});
+  });
   closeSettingsBtn.addEventListener('click', closeModal);
   modal.addEventListener('click', (event) => {
     if (event.target === modal) {
@@ -1560,13 +1879,24 @@ body.col-resize-active * {
     if (event.key === 'Escape' && modal.classList.contains('open')) {
       closeModal();
     }
+    if (event.key === 'Escape' && imagePreviewShell.classList.contains('open')) {
+      hideImagePreview();
+    }
   });
+
+  document.addEventListener('scroll', () => {
+    if (imagePreviewShell.classList.contains('open')) {
+      hideImagePreview();
+    }
+  }, true);
 
   themeBtn.addEventListener('click', () => {
     state.theme = state.theme === 'dark' ? 'light' : 'dark';
     document.body.setAttribute('data-theme', state.theme);
     updateThemeButton();
   });
+
+  updateCopyButtonState(false);
 
   clearFiltersBtn.addEventListener('click', () => {
     columns.forEach((col) => {
@@ -1603,6 +1933,20 @@ body.col-resize-active * {
 """
 
 
+def parse_name_list(values: Optional[Sequence[str]]) -> Set[str]:
+    result: Set[str] = set()
+    if not values:
+        return result
+    for value in values:
+        if value is None:
+            continue
+        for part in str(value).split(","):
+            name = part.strip()
+            if name:
+                result.add(name)
+    return result
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Render a self-contained HTML review dashboard from a CSV file."
@@ -1622,6 +1966,24 @@ def parse_args() -> argparse.Namespace:
         "--subtitle",
         default="Interactive summary with filters, column layout, and pinned columns.",
         help="Dashboard subtitle.",
+    )
+    parser.add_argument(
+        "--initial-pinned-columns",
+        nargs="*",
+        default=None,
+        help="Optional initial pinned columns. Accepts space-separated names and/or comma-separated values.",
+    )
+    parser.add_argument(
+        "--initial-hidden-columns",
+        nargs="*",
+        default=None,
+        help="Optional initial hidden columns. Accepts space-separated names and/or comma-separated values.",
+    )
+    parser.add_argument(
+        "--image-columns",
+        nargs="*",
+        default=None,
+        help="Optional image-path columns for hover preview. Accepts space-separated names and/or comma-separated values.",
     )
     return parser.parse_args()
 
@@ -1709,40 +2071,56 @@ def build_bar_meta(series: pd.Series, mode: str, theme: str) -> Dict[str, Option
     return {"mode": mode, "theme": theme, "lo": float(valid.min()), "hi": float(valid.max())}
 
 
-def choose_default_width(column_name: str, is_numeric: bool, has_bar: bool) -> int:
+def choose_default_width(column_name: str, is_numeric: bool, has_bar: bool, is_image: bool = False) -> int:
     lower = column_name.lower()
     if has_bar:
-        return 150
+        return 135
     if is_numeric:
-        return 110
+        return 90
+    if is_image:
+        return 210
     if lower == "basename":
-        return 220
+        return 210
     if lower.startswith("recipe_"):
-        return 280
+        return 210
     if lower in {"grid_size", "bg_type", "mode"}:
-        return 120
-    return 180
+        return 60
+    return 90
 
 
-def build_columns_meta(df: pd.DataFrame, columns: Sequence[str]) -> List[Dict[str, object]]:
+def build_columns_meta(
+    df: pd.DataFrame,
+    columns: Sequence[str],
+    initial_pinned_columns: Optional[Set[str]] = None,
+    initial_hidden_columns: Optional[Set[str]] = None,
+    image_columns: Optional[Set[str]] = None,
+) -> List[Dict[str, object]]:
     numeric_map = detect_numeric_columns(df, columns)
+    pinned_names = set(initial_pinned_columns or set())
+    hidden_names = set(initial_hidden_columns or set())
+    image_names = set(image_columns or set())
+
     metadata: List[Dict[str, object]] = []
     for idx, col in enumerate(columns):
-        attrs = classify_bar_attributes(col) if numeric_map[col] else None
+        is_image = col in image_names
+        attrs = classify_bar_attributes(col) if numeric_map[col] and not is_image else None
         bar = None
         if attrs is not None:
             mode, theme = attrs
             bar = build_bar_meta(df[col], mode, theme)
+        default_visible = col not in hidden_names
+        default_pinned = (col in pinned_names or (idx == 0 and col == "Basename" and not pinned_names)) and default_visible
         metadata.append(
             {
                 "name": col,
-                "is_numeric": numeric_map[col],
-                "is_categorical": is_categorical(col) and not numeric_map[col],
+                "is_numeric": numeric_map[col] and not is_image,
+                "is_categorical": is_categorical(col) and not numeric_map[col] and not is_image,
                 "is_ratio_like": is_ratio_like(col),
+                "is_image": is_image,
                 "bar": bar,
-                "default_width": choose_default_width(col, numeric_map[col], bar is not None),
-                "default_visible": True,
-                "default_pinned": idx == 0 and col == "Basename",
+                "default_width": choose_default_width(col, numeric_map[col] and not is_image, bar is not None, is_image=is_image),
+                "default_visible": default_visible,
+                "default_pinned": default_pinned,
             }
         )
     return metadata
@@ -1794,9 +2172,18 @@ def build_dashboard_html(
     subtitle: str,
     initial_sort_by: Optional[str],
     initial_descending: bool,
+    initial_pinned_columns: Optional[Set[str]] = None,
+    initial_hidden_columns: Optional[Set[str]] = None,
+    image_columns: Optional[Set[str]] = None,
 ) -> str:
     payload = {
-        "columns": build_columns_meta(df, columns),
+        "columns": build_columns_meta(
+            df,
+            columns,
+            initial_pinned_columns=initial_pinned_columns,
+            initial_hidden_columns=initial_hidden_columns,
+            image_columns=image_columns,
+        ),
         "rows": build_rows_payload(df, columns),
         "initial_theme": "dark",
         "initial_sort_by": initial_sort_by if initial_sort_by in columns else None,
@@ -1820,6 +2207,9 @@ def render_dashboard_from_csv(
     title: str = "Simulation Results Dashboard",
     subtitle: str = "Interactive summary with filters, column layout, and pinned columns.",
     drop_empty_columns_enabled: bool = True,
+    initial_pinned_columns: Optional[Set[str]] = None,
+    initial_hidden_columns: Optional[Set[str]] = None,
+    image_columns: Optional[Set[str]] = None,
 ) -> None:
     df = read_csv(Path(csv_path))
     selected_columns = select_columns(df, columns)
@@ -1835,6 +2225,9 @@ def render_dashboard_from_csv(
         subtitle=subtitle,
         initial_sort_by=sort_by,
         initial_descending=descending,
+        initial_pinned_columns=initial_pinned_columns,
+        initial_hidden_columns=initial_hidden_columns,
+        image_columns=image_columns,
     )
     Path(output_path).write_text(html_text, encoding="utf-8")
 
@@ -1858,6 +2251,9 @@ def main() -> None:
         max_rows=args.max_rows,
         title=args.title,
         subtitle=args.subtitle,
+        initial_pinned_columns=parse_name_list(args.initial_pinned_columns),
+        initial_hidden_columns=parse_name_list(args.initial_hidden_columns),
+        image_columns=parse_name_list(args.image_columns),
     )
     print(f"Saved HTML dashboard to: {output_path}")
 
