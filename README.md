@@ -6,7 +6,7 @@
 
 A Python-based workflow integrating custom 3D microstructure modeling with property evaluations (thermal, electrical, and mechanical) using the `chfem` and `PuMA` solvers.
 
-This repository provides an end-to-end flat script structure—from structure generation to solver execution and result visualization. It features robust experiment management, allowing you to reproduce and expand large-scale parameter sweeps without managing complex directory hierarchies or worrying about data loss.
+This repository provides a modular, end-to-end simulation framework encompassing 3D structure generation, solver execution, and result visualization. It features robust experiment management, allowing you to seamlessly reproduce and expand large-scale parameter sweeps without data loss.
 
 Each run writes a CSV log that stores both solver outputs and lightweight structure descriptors computed directly from the generated `final_grid`. These descriptors are also available in `--recalc` mode, so legacy models can be re-evaluated without rebuilding geometry.
 
