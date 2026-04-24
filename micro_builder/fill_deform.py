@@ -39,29 +39,36 @@ def crop_and_standardize(mask, cm_global_abs):
     
     return cropped_mask, offset_center_to_cm
 
-
 # =========================================================
 # Mathematical Utilities for Kinematics & Orientation
 # =========================================================
 
 def get_oriented_rotation_matrix(mean_dir=(0.0, 0.0, 1.0), kappa=0.0):
     """
-    Generate a 3x3 rotation matrix sampled from the von Mises-Fisher (vMF) distribution.
-    If kappa <= 0, it yields a completely isotropic (uniform) random rotation.
+    Generate a 3x3 rotation matrix.
+    If kappa == 0: Isotropic random rotation.
+    If kappa >  0: Polar alignment along mean_dir.
+    If kappa <  0: Girdle (equatorial) alignment perpendicular to mean_dir.
     
     Parameters:
       mean_dir (tuple/list): The target mean direction vector.
       kappa (float): Concentration parameter (0 = random, >0 = aligned to mean_dir).
     """
     # 1. Sample the Z-component (W)
-    if kappa <= 1e-5:
+    if abs(kappa) <= 1e-5:
         W = builder.rng.uniform(-1.0, 1.0)
-    else:
-        # Numerically stable inverse transform sampling (Avoids exp overflow for large kappa)
-        # W = 1 + (1/kappa) * ln( U + (1-U)*exp(-2*kappa) )
+    elif kappa > 0:
+        # Polar alignment (vMF style inverse transform sampling)
         U = builder.rng.uniform(0.0, 1.0)
         W = 1.0 + (1.0 / kappa) * np.log(U + (1.0 - U) * np.exp(-2.0 * kappa))
-        
+    else:
+        # Girdle alignment (Pseudo-Watson truncated normal sampling)
+        sigma = 1.0 / np.sqrt(2.0 * abs(kappa))
+        while True:
+            W = builder.rng.normal(0.0, sigma)
+            if abs(W) <= 1.0:
+                break
+                
     # 2. Sample the azimuthal angle (Theta) uniformly
     theta = builder.rng.uniform(0.0, 2.0 * np.pi)
     
@@ -83,10 +90,8 @@ def get_oriented_rotation_matrix(mean_dir=(0.0, 0.0, 1.0), kappa=0.0):
     c = np.dot(base_z, m_dir)
     
     if s < 1e-8:
-        # Already aligned or exactly anti-aligned
         R_align = np.eye(3) if c > 0 else np.diag([1, -1, -1])
     else:
-        # Rodrigues' rotation formula
         vX = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
         R_align = np.eye(3) + vX + (vX @ vX) * ((1.0 - c) / (s**2))
         
@@ -103,7 +108,6 @@ def get_oriented_rotation_matrix(mean_dir=(0.0, 0.0, 1.0), kappa=0.0):
         vX2 = np.array([[0, -v2[2], v2[1]], [v2[2], 0, -v2[0]], [-v2[1], v2[0], 0]])
         R_target = np.eye(3) + vX2 + (vX2 @ vX2) * ((1.0 - c2) / (s2**2))
         
-    # The roll angle (cross-sectional twist) remains uniformly random
     roll = builder.rng.uniform(0.0, 2.0 * np.pi)
     R_roll = np.array([
         [np.cos(roll), -np.sin(roll), 0],
@@ -112,7 +116,6 @@ def get_oriented_rotation_matrix(mean_dir=(0.0, 0.0, 1.0), kappa=0.0):
     ])
     
     return R_target @ R_roll
-
 
 # =========================================================
 # B. Rigid Stamp Module (Sphere, Flake, Rigid Cylinder, etc.)
@@ -224,22 +227,25 @@ def create_agglomerate_mask(num_fibers, length, radius, max_bend_deg=90, max_tot
     }
     return cropped_mask, geom_data
 
-def create_staggered_flakes_mask(radius=15, layer_thickness=2, min_layers=1, max_layers=4, max_offset_pct=20):
+def create_staggered_flakes_mask(radius=15, layer_thickness=2, min_layers=1, max_layers=4, max_offset_pct=20, mean_dir=(0.0, 0.0, 1.0), kappa=0.0):
     """Generate a compound stamp of staggered platelets, rigorously standardizing its centroid."""
     num_layers = builder.rng.integers(min_layers, max_layers + 1)
     max_offset_px = radius * (max_offset_pct / 100.0)
     box_size = int(math.ceil((radius + num_layers * max_offset_px) * 2 + num_layers * layer_thickness)) + 4
     
-    angles = builder.rng.random(3) * 2 * np.pi
-    az, ay, ax = angles
-    R_orig = np.array([[math.cos(az), -math.sin(az), 0], [math.sin(az), math.cos(az), 0], [0, 0, 1]]) @ \
-             np.array([[math.cos(ay), 0, math.sin(ay)], [0, 1, 0], [-math.sin(ay), 0, math.cos(ay)]]) @ \
-             np.array([[1, 0, 0], [0, math.cos(ax), -math.sin(ax)], [0, math.sin(ax), math.cos(ax)]])
+    # Random Euler angles removed. Replaced with the unified directional rotation matrix.
+    R_orig = get_oriented_rotation_matrix(mean_dir=mean_dir, kappa=kappa)
              
     Z, Y, X = np.indices((box_size, box_size, box_size))
     Z = Z - box_size//2; Y = Y - box_size//2; X = X - box_size//2
-    rot = R_orig @ np.stack([Z.ravel(), Y.ravel(), X.ravel()])
-    Zr, Yr, Xr = rot[0,:].reshape((box_size, box_size, box_size)), rot[1,:].reshape((box_size, box_size, box_size)), rot[2,:].reshape((box_size, box_size, box_size))
+    
+    # Apply inverse rotation (transpose) for global-to-local mapping
+    rot = R_orig.T @ np.stack([Z.ravel(), Y.ravel(), X.ravel()])
+    
+    # Assign rot[2] to Zr, as index 2 is the primary direction axis in local space
+    Xr = rot[0,:].reshape((box_size, box_size, box_size))
+    Yr = rot[1,:].reshape((box_size, box_size, box_size))
+    Zr = rot[2,:].reshape((box_size, box_size, box_size))
 
     local_centers = []
     cy, cx = 0.0, 0.0
@@ -356,8 +362,14 @@ def get_flake_mask(radius, thickness, mean_dir=(0.0, 0.0, 1.0), kappa=0.0, physi
              
     Z, Y, X = np.indices((size, size, size))
     Z = Z - size//2; Y = Y - size//2; X = X - size//2
-    rot = R_orig @ np.stack([Z.ravel(), Y.ravel(), X.ravel()])
-    Zr, Yr, Xr = rot[0,:].reshape((size, size, size)), rot[1,:].reshape((size, size, size)), rot[2,:].reshape((size, size, size))
+    
+    # Apply inverse rotation (transpose) for global-to-local mapping
+    rot = R_orig.T @ np.stack([Z.ravel(), Y.ravel(), X.ravel()])
+    
+    # Assign rot[2] to Zr, as index 2 is the primary direction axis in vMF/local space
+    Xr = rot[0,:].reshape((size, size, size))
+    Yr = rot[1,:].reshape((size, size, size))
+    Zr = rot[2,:].reshape((size, size, size))
     
     # Mask generation based on rotated coordinates
     mask = (Xr**2 + Yr**2 <= radius**2) & (np.abs(Zr) <= thickness/2)
@@ -371,12 +383,11 @@ def get_flake_mask(radius, thickness, mean_dir=(0.0, 0.0, 1.0), kappa=0.0, physi
     }
     return cropped_mask, geom_data
 
-def get_staggered_flakes_mask(radius=15, layer_thickness=2, min_layers=1, max_layers=4, max_offset_pct=30, physics_mode='thermal'):
-    return create_staggered_flakes_mask(radius, layer_thickness, min_layers, max_layers, max_offset_pct)
+def get_staggered_flakes_mask(radius=15, layer_thickness=2, min_layers=1, max_layers=4, max_offset_pct=30, mean_dir=(0.0, 0.0, 1.0), kappa=0.0, physics_mode='thermal'):
+    return create_staggered_flakes_mask(radius, layer_thickness, min_layers, max_layers, max_offset_pct, mean_dir, kappa)
 
 def get_flexible_fiber_mask(length=90, radius=2, max_bend_deg=90, max_total_bends=10, physics_mode='thermal'):
     return create_fiber_mask(length, radius, max_bend_deg, max_total_bends)
-
 
 def get_irregular_fiber_mask(length, shape_type='ellipse', radius_max=5.0, ratio=0.5, 
                              mean_dir=(0.0, 0.0, 1.0), kappa=0.0, physics_mode='thermal'):
@@ -398,8 +409,14 @@ def get_irregular_fiber_mask(length, shape_type='ellipse', radius_max=5.0, ratio
              
     Z, Y, X = np.indices((box_size, box_size, box_size))
     Z = Z - box_size//2; Y = Y - box_size//2; X = X - box_size//2
-    rot = R_orig @ np.stack([Z.ravel(), Y.ravel(), X.ravel()])
-    Zr, Yr, Xr = rot[0,:].reshape((box_size, box_size, box_size)), rot[1,:].reshape((box_size, box_size, box_size)), rot[2,:].reshape((box_size, box_size, box_size))
+    
+    # Apply inverse rotation (transpose) for global-to-local mapping
+    rot = R_orig.T @ np.stack([Z.ravel(), Y.ravel(), X.ravel()])
+    
+    # Assign rot[2] to Zr, as index 2 is the primary direction axis in vMF/local space
+    Xr = rot[0,:].reshape((box_size, box_size, box_size))
+    Yr = rot[1,:].reshape((box_size, box_size, box_size))
+    Zr = rot[2,:].reshape((box_size, box_size, box_size))
     
     # Common longitudinal mask along the local Z-axis
     z_mask = np.abs(Zr) <= length / 2.0
@@ -1064,8 +1081,8 @@ def _render_and_paste_kinematics(comp_grid, shell_count_grid, P_CM_new, F_mat, g
     local_kinematics = geom['local_kinematics']
 
     if base_type in ['flake', 'staggered', 'irregular_fiber']:
-        # Extract pure rigid-body rotation (Polar Decomposition)
-        R_local_to_global = R_orig.T
+        # Apply pure rigid-body rotation (Polar Decomposition) without the hacky transpose
+        R_local_to_global = np.array(R_orig)
         R_pure_local_to_global, _ = polar(F_mat @ R_local_to_global)
 
         loc_pts = np.array(local_kinematics)
@@ -1087,9 +1104,11 @@ def _render_and_paste_kinematics(comp_grid, shell_count_grid, P_CM_new, F_mat, g
 
         R_global_to_local = R_pure_local_to_global.T
         coords_local = R_global_to_local @ coords_global_shifted
-        Z_loc = coords_local[0,:].reshape(box_shape)
+        
+        # Assign coords_local[2] to Z_loc to match the primary axis in local space
+        X_loc = coords_local[0,:].reshape(box_shape)
         Y_loc = coords_local[1,:].reshape(box_shape)
-        X_loc = coords_local[2,:].reshape(box_shape)
+        Z_loc = coords_local[2,:].reshape(box_shape)
 
         mask = np.zeros(box_shape, dtype=bool)
 
