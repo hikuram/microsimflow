@@ -39,7 +39,7 @@ for i in range(1, 11):
     
     # Run at size=100 for faster test completion
     py_script += '    cmd = [\n'
-    py_script += '        "python3", "run_pipeline.py",\n'
+    py_script += '        "python3", "-m", "run_pipeline",\n'
     py_script += '        "--size", "100",\n'
     py_script += f'        "--bg_type", "{bg}",\n'
     py_script += f'        "--physics_mode", "{mode}",\n'

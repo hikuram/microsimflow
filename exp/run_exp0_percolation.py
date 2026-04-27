@@ -34,7 +34,7 @@ def run():
                 basename = os.path.join(out_dir, f"perc_r{r}_vf{vf:.2f}_seed{seed}")
                 
                 cmd = [
-                    "python3", "run_pipeline.py",
+                    "python3", "-m", "run_pipeline",
                     "--size", "100",
                     "--bg_type", "single",
                     "--physics_mode", "electrical",

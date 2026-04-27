@@ -46,7 +46,7 @@ def run():
                 basename = os.path.join(out_dir, f"scale_s{size}_L{length}_r{radius}_vf{vf:.2f}_seed{seed}")
                 
                 cmd = [
-                    "python3", "run_pipeline.py",
+                    "python3", "-m", "run_pipeline",
                     "--size", str(size),
                     "--bg_type", "single",
                     "--physics_mode", "electrical",

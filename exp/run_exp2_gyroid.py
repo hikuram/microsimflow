@@ -28,7 +28,7 @@ def run():
             basename = os.path.join(out_dir, f"gyroid_vf{vf:.2f}_seed{seed}")
             
             cmd = [
-                "python3", "run_pipeline.py",
+                "python3", "-m", "run_pipeline",
                 "--size", "200",
                 "--bg_type", "gyroid",
                 "--physics_mode", "electrical",

@@ -54,7 +54,7 @@ def build_base_command(
     extra_args: Optional[List[str]] = None,
 ) -> List[str]:
     cmd = [
-        "python3", "run_pipeline.py",
+        "python3", "-m", "run_pipeline",
         "--size", str(size),
         "--voxel_size", str(voxel_size),
         "--bg_type", bg_type,

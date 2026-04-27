@@ -38,7 +38,7 @@ def run():
             basename = os.path.join(out_dir, f"exp7_{shape_name}_seed{seed}")
             
             cmd = [
-                "python3", "run_pipeline.py",
+                "python3", "-m", "run_pipeline",
                 "--size", "150",
                 "--bg_type", "single",
                 "--physics_mode", "electrical",

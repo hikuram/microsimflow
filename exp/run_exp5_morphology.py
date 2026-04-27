@@ -35,7 +35,7 @@ def run():
                 basename = os.path.join(out_dir, f"morph_{bg}_vfA{phaseA_ratio:.1f}_seed{seed}")
                 
                 cmd = [
-                    "python3", "run_pipeline.py",
+                    "python3", "-m", "run_pipeline",
                     "--size", "150",
                     "--bg_type", bg,
                     "--phaseA_ratio", str(phaseA_ratio),

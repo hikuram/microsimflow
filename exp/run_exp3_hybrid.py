@@ -32,7 +32,7 @@ def run():
             basename = os.path.join(out_dir, f"hybrid_fib{v_fib:.2f}_flk{v_flk:.2f}_seed{seed}")
             
             cmd = [
-                "python3", "run_pipeline.py",
+                "python3", "-m", "run_pipeline",
                 "--size", "200",
                 "--bg_type", "single",
                 "--physics_mode", "electrical",
