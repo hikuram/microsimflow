@@ -18,9 +18,9 @@ def run():
     phaseA_ratios = [0.3, 0.4, 0.5, 0.6, 0.7]
     
     # Define elastic properties: "Bulk/Young's_Modulus Poisson's_Ratio"
-    # Soft phase (E=1.0), Hard phase (E=10.0)
-    prop_A = "10.0 0.3"
-    prop_B = "1000.0 0.3"
+    # Soft phase (E=1.0), Hard phase (E=100.0)
+    prop_A = "1.0 0.35"
+    prop_B = "100.0 0.30"
     
     # Morphologies to compare
     morphologies = ["lamellar", "cylinder", "gyroid", "sea_island"]
