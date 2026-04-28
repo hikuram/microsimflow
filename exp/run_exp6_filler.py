@@ -15,10 +15,12 @@ def run():
     out_dir = get_next_result_dir()
     os.makedirs(out_dir)
     
-    # Base polymer (Soft Matrix)
-    prop_A = "1.0 0.3"
-    # Extremely hard filler (E=100.0)
-    prop_filler = "100.0_0.3" 
+    # Mechanics default properties.
+    prop_A = "1.0 0.35"
+    prop_B = "1.0 0.35"
+    prop_inter2 = "10.0 0.30"
+    prop_inter = "100.0 0.25"
+    prop_filler = "1000.0_0.20"
     
     # Volume fractions to sweep (1% to 9%)
     vfs = np.round(np.arange(0.01, 0.11, 0.02), 2)
@@ -47,10 +49,9 @@ def run():
                     "--physics_mode", "mechanics",
                     "--solver", "chfem",
                     "--prop_A", prop_A,
-                    # --- FIX: Nullify the interphase stiffening effect ---
-                    "--prop_inter", prop_A,   
-                    "--prop_inter2", prop_A,  
-                    # -----------------------------------------------------
+                    "--prop_B", prop_B,
+                    "--prop_inter2", prop_inter2,
+                    "--prop_inter", prop_inter,
                     "--basename", basename,
                     "--csv_log", csv_log,
                     "--seed", str(seed),
