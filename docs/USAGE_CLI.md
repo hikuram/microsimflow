@@ -25,7 +25,6 @@ Below is a comprehensive reference of all supported filler types (`type`) and th
 | **`flexfiber`** | Flexible fiber generated via a random walk with bending probability. | None | `length` (90), `radius` (2), `max_bend_deg` (90), `max_total_bends` (10) |
 | **`irregfiber`** | Straight rigid fiber with an extruded irregular cross-section (e.g., C-shape, bean). | `length` | `shape` (ellipse)*, `radius` (5.0), `ratio` (0.5), `mean_dir` (0,0,1), `kappa` (0.0)<br>*`shape` accepts: `ellipse`, `bean`, `c-shape`* |
 | **`agglom`** | A localized bundle/agglomerate of multiple flexible fibers. | None | `num_fibers` (5), `length` (90), `radius` (2), `max_bend_deg` (90), `max_total_bends` (10) |
-| **`adaptfiber`** | Global fiber that actively avoids matrix boundaries and makes 180-deg U-turns. | `length`, `radius` | `max_bend_deg` (45), `max_total_bends` (10), `max_retries_per_step` (10), `max_protrusion_ratio` (0.1), `min_backbone_ratio` (0.9) |
 
 ### Orientation Control (Pseudo-Watson Distribution)
 Orientation is controlled via `mean_dir` and `kappa` for `flake`, `staggered`, `rigidfiber`, and `irregfiber`.
