@@ -10,8 +10,25 @@ You can easily design and run a custom simulation by passing arguments directly 
 Recipe strings follow the format:
 `type:volume_fraction:param1=value1:param2=value2:...`
 
+### Supported Filler Types & Parameters
+
+Below is a comprehensive reference of all supported filler types (`type`) and their specific parameters. 
+
+> **Note:** If an optional parameter is not explicitly defined in your recipe string, the algorithm will use its default value.
+
+| Type (`type`) | Description | Required Parameters | Optional Parameters (Default Values) |
+| :--- | :--- | :--- | :--- |
+| **`sphere`** | Perfect spherical filler. | `radius` | None |
+| **`flake`** | Disk-like platelet. Supports orientation. | `radius`, `thickness` | `mean_dir` (0,0,1), `kappa` (0.0) |
+| **`staggered`** | Multiple overlapping flakes mimicking exfoliated stacks. | None | `radius` (15), `layer_thickness` (2), `min_layers` (1), `max_layers` (4), `max_offset_pct` (30), `mean_dir` (0,0,1), `kappa` (0.0) |
+| **`rigidfiber`** | Straight rigid cylinder. | `length`, `radius` | `mean_dir` (0,0,1), `kappa` (0.0) |
+| **`flexfiber`** | Flexible fiber generated via a random walk with bending probability. | None | `length` (90), `radius` (2), `max_bend_deg` (90), `max_total_bends` (10) |
+| **`irregfiber`** | Straight rigid fiber with an extruded irregular cross-section (e.g., C-shape, bean). | `length` | `shape` (ellipse)*, `radius` (5.0), `ratio` (0.5), `mean_dir` (0,0,1), `kappa` (0.0)<br>*`shape` accepts: `ellipse`, `bean`, `c-shape`* |
+| **`agglom`** | A localized bundle/agglomerate of multiple flexible fibers. | None | `num_fibers` (5), `length` (90), `radius` (2), `max_bend_deg` (90), `max_total_bends` (10) |
+| **`adaptfiber`** | Global fiber that actively avoids matrix boundaries and makes 180-deg U-turns. | `length`, `radius` | `max_bend_deg` (45), `max_total_bends` (10), `max_retries_per_step` (10), `max_protrusion_ratio` (0.1), `min_backbone_ratio` (0.9) |
+
 ### Orientation Control (Pseudo-Watson Distribution)
-Orientation is controlled via `mean_dir` and `kappa` for `flake`, `rigidfiber`, and `irregfiber`.
+Orientation is controlled via `mean_dir` and `kappa` for `flake`, `staggered`, `rigidfiber`, and `irregfiber`.
 * `kappa = 0`: Isotropic random orientation.
 * `kappa > 0`: Polar alignment (vMF style) strictly along the `mean_dir` axis.
 * `kappa < 0`: Girdle/Equatorial alignment where vectors distribute in the plane perpendicular to the `mean_dir` axis (Pseudo-Watson).
