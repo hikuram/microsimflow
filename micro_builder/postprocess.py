@@ -153,7 +153,7 @@ def _cleanup_small_components(mask, min_component_size=2):
     return mask & (neighbor_count >= min_component_size - 1)
 
 def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics_mode='thermal', 
-                            primary_inter_id=3, secondary_inter_id=3, filler_start_id=4,
+                            primary_inter_id=3, secondary_inter_id=2, filler_start_id=4,
                             sliver_fill_iters=1, spike_min_neighbors=2, min_interface_component_size=2,
                             contact_radius=1):
     """
@@ -256,7 +256,7 @@ def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics
 
     return final_grid
 
-def summarize_phase_fractions(final_grid, primary_inter_id=3, secondary_inter_id=3, filler_start_id=4):
+def summarize_phase_fractions(final_grid, primary_inter_id=3, secondary_inter_id=2, filler_start_id=4):
     """Aggregate the volume fraction of each structural phase."""
     total_voxels = final_grid.size
     max_id = final_grid.max()
