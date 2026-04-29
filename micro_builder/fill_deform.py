@@ -184,7 +184,7 @@ def create_fiber_mask(length, radius, max_bend_deg=90, max_total_bends=10):
     }
     return cropped_mask, geom_data
 
-def create_agglomerate_mask(num_fibers, length, radius, max_bend_deg=90, max_total_bends=10, physics_mode='thermal', filler_id=4, inter_id=3):
+def create_agglomerate_mask(num_fibers, length, radius, max_bend_deg=90, max_total_bends=10, physics_mode='thermal', filler_id=4, inter_id=2):
     box_size = int(length + radius * 2 + 5)
     combined_mask = np.zeros((box_size, box_size, box_size), dtype=np.uint8)
     start_radius = radius * 2
@@ -664,7 +664,7 @@ def grow_adaptive_fiber(tpms_grid, comp_grid, start_pos, length, overlap_mode,
         
     return backbone
 
-def apply_brush_and_write(comp_grid, backbone, radius, physics_mode='thermal', shell_count_grid=None, filler_id=4, inter_id=3, tunnel_radius=2):
+def apply_brush_and_write(comp_grid, backbone, radius, physics_mode='thermal', shell_count_grid=None, filler_id=4, tunnel_radius=2):
     shape = comp_grid.shape
     size = int(radius * 2 + 2)
     z, y, x = np.indices((size, size, size))
@@ -724,7 +724,7 @@ def apply_brush_and_write(comp_grid, backbone, radius, physics_mode='thermal', s
 def place_adaptive_fibers(comp_grid, tpms_grid, target_vol_frac, length, radius,
                           max_bend_deg=45, max_total_bends=10, max_retries_per_step=10, max_protrusion_ratio=0.1,
                           min_backbone_ratio=0.9, max_attempts=1000000, desc="", log_file=None,
-                          physics_mode='thermal', shell_count_grid=None, filler_id=4, inter_id=3, tunnel_radius=2):
+                          physics_mode='thermal', shell_count_grid=None, filler_id=4, tunnel_radius=2):
     shape = comp_grid.shape
     target_voxels = int(np.prod(shape) * target_vol_frac)
     valid_z, valid_y, valid_x = np.where(tpms_grid == 0)
@@ -762,7 +762,7 @@ def place_adaptive_fibers(comp_grid, tpms_grid, target_vol_frac, length, radius,
                 continue
 
             consecutive_fails = 0
-            apply_brush_and_write(comp_grid, backbone, radius, physics_mode, shell_count_grid, filler_id, inter_id, tunnel_radius)
+            apply_brush_and_write(comp_grid, backbone, radius, physics_mode, shell_count_grid, filler_id, tunnel_radius)
 
             current_total = np.sum(comp_grid >= 2)
             added_voxels = current_total - placed_voxels
@@ -795,7 +795,7 @@ def place_adaptive_fibers(comp_grid, tpms_grid, target_vol_frac, length, radius,
 @njit
 def _check_and_place_fast(comp_grid, tpms_grid, cz, cy, cx, 
                           stamp_offsets, stamp_vals, current_protrusion_limit, 
-                          overlap_mode, filler_id, inter_id):
+                          overlap_mode, filler_id):
     """
     Numba-optimized JIT compiled function.
     Performs boundary checks, collision detection, and voxel writing without Python loop overhead.
@@ -846,7 +846,7 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
                          max_attempts=1000000, fallback_func=None, desc="",
                          protrusion_coef=0.0025, log_file=None,
                          physics_mode='thermal', shell_count_grid=None,
-                         filler_id=4, inter_id=3, tunnel_radius=2, placement_registry=None):
+                         filler_id=4, tunnel_radius=2, placement_registry=None):
     
     shape = comp_grid.shape
     total_voxels = comp_grid.size
@@ -929,7 +929,7 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
             success = _check_and_place_fast(
                 comp_grid, tpms_grid, cz, cy, cx, 
                 stamp_offsets, stamp_vals, current_protrusion_limit, 
-                overlap_mode, filler_id, inter_id
+                overlap_mode, filler_id
             )
 
             if not success:
@@ -969,8 +969,7 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
                 placement_registry.append({
                     'geom': current_geom_data,
                     'center': (cz, cy, cx),
-                    'filler_id': filler_id,
-                    'inter_id': inter_id
+                    'filler_id': filler_id
                 })
 
             # Update progress
@@ -1037,7 +1036,7 @@ def _transform_fiber_kinematics(local_bb, lam, lam_nu):
     new_bb += (start_anchor - new_bb[0])
     return new_bb
 
-def _paste_mask_to_grid(comp_grid, shell_count_grid, cz, cy, cx, mask, filler_id, inter_id, tunnel_radius):
+def _paste_mask_to_grid(comp_grid, shell_count_grid, cz, cy, cx, mask, filler_id, tunnel_radius):
     """Helper to paste a generic boolean mask (flakes/spheres) into the grid"""
     shape = comp_grid.shape
     coords = np.argwhere(mask > 0)
@@ -1216,7 +1215,7 @@ def _render_and_paste_kinematics(comp_grid, shell_count_grid, P_CM_new, F_mat, g
     new_cy = int(round(target_center_global[1])) % new_shape[1]
     new_cx = int(round(target_center_global[2])) % new_shape[2]
 
-    _paste_mask_to_grid(comp_grid, shell_count_grid, new_cz, new_cy, new_cx, cropped, item['filler_id'], item['inter_id'], tunnel_radius)
+    _paste_mask_to_grid(comp_grid, shell_count_grid, new_cz, new_cy, new_cx, cropped, item['filler_id'], tunnel_radius)
 
 def render_deformed_fillers(placement_registry, base_shape, stretch_ratio, poisson_ratio, comp_grid, shell_count_grid, tunnel_radius=2):
     """Renders rigid fillers into the deformed configuration."""
@@ -1243,7 +1242,7 @@ def render_deformed_fillers(placement_registry, base_shape, stretch_ratio, poiss
             new_cy = int(round(target[1])) % new_shape[1]
             new_cx = int(round(target[2])) % new_shape[2]
             mask, _ = get_sphere_mask(geom['radius'])
-            _paste_mask_to_grid(comp_grid, shell_count_grid, new_cz, new_cy, new_cx, mask, item['filler_id'], item['inter_id'], tunnel_radius)
+            _paste_mask_to_grid(comp_grid, shell_count_grid, new_cz, new_cy, new_cx, mask, item['filler_id'], tunnel_radius)
         else:
             # Route all complex kinematics to the unified dynamic bounding box renderer
             _render_and_paste_kinematics(comp_grid, shell_count_grid, P_CM_new, F_mat, geom, item, tunnel_radius)
