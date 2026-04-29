@@ -86,3 +86,77 @@ To support downstream mechanical experiments (e.g., studying changes in conducti
 1. **Center of Mass Translation:** The absolute physical CM of each filler is mathematically shifted using the deformation gradient tensor (`F_mat`), accounting for the stretch ratio and Poisson's ratio.
 2. **Polar Decomposition:** `scipy.linalg.polar` extracts the pure rigid-body rotation ($R_{pure}$) from the combined `F_mat` and `R_orig`. This guarantees that rigid fillers like flakes or irregular fibers only rotate and never distort.
 3. **Dynamic Bounding Box Rendering:** The local kinematics are transformed, and the mask is redrawn *strictly* within a dynamically calculated, tightly cropped bounding box. This prevents memory explosions in large grids while perfectly preserving inextensibility and exact rigid-body volume.
+
+-----
+
+```mermaid
+%%{init: {'themeVariables': { 'fontFamily': 'Arial'}}}%%
+graph TD
+    %% Dark Mode Compatibility: Explicitly defining font color (#000000 or #ffffff) for contrast
+    classDef process fill:#e1f5fe,stroke:#0288d1,stroke-width:1px,color:#000000;
+    classDef decision fill:#fff9c4,stroke:#fbc02d,stroke-width:1px,color:#000000;
+    classDef data fill:#e8f5e9,stroke:#388e3c,stroke-width:1px,color:#000000;
+    classDef terminal fill:#37474f,stroke:#37474f,color:#ffffff,stroke-width:2px;
+
+    Start([Start Generation]):::terminal --> Ph1
+
+    %% ================= Phase 1 =================
+    subgraph Ph1 [Phase 1: Geometry & Kinematics]
+        direction TB
+        G1[Shape Selection]:::process --> G2[vMF Orientation Control]:::process
+        G2 --> G3[Mask / Skeleton Generation]:::process
+        G3 --> G4[Crop & CM Standardization]:::process
+        G4 --> Cache[(Geometry Cache<br/>& Shell Offsets)]:::data
+    end
+
+    %% ================= Phase 2 =================
+    subgraph Ph2 [Phase 2: RSA Core Placement]
+        direction TB
+        R1[Sample Valid Coordinate in Matrix]:::process
+        Cache -.-> R1
+        R1 --> R2{Numba JIT Fast Check<br/>Overlap & Protrusion}:::decision
+        R2 -- Collision / Out of bounds --> R1
+        R2 -- Success --> R3[Bitwise Write to Grid]:::process
+        R3 --> R4["Track Overlap |= 128<br/>Track Shell += 1"]:::process
+        R4 --> Registry[(Placement Registry)]:::data
+    end
+
+    Ph1 --> R1
+    R4 -- Target VF Reached --> D1
+
+    %% ================= Phase 3 (Deformation happens BEFORE interfaces) =================
+    subgraph Ph3 [Phase 3: Affine Deformation & Rendering]
+        direction TB
+        D1{Mechanical Stretch<br/>Requested?}:::decision
+        Registry -.-> D1
+        D1 -- Yes --> D2[CM Affine Translation]:::process
+        D2 --> D3[Polar Decomposition R_pure]:::process
+        D3 --> D4[Dynamic Bounding Box Redraw]:::process
+    end
+
+    %% ================= Phase 4 =================
+    subgraph Ph4 [Phase 4: Physics-Aware Interface Generation]
+        direction TB
+        I1{Physics Mode?}:::decision
+        
+        I1 -- Thermal --> I2[Extract overlap bit]:::process
+        I2 --> I3[Distance Transform & Clean]:::process
+        I3 --> I4[Assign Primary ID: 3<br/>& Secondary ID: 2]:::process
+        
+        I1 -- Electrical / Mechanics --> I5[Extract unified shell >= 2]:::process
+        I5 --> I6[Dilate Filler & Split Intersections]:::process
+        I6 --> I4
+    end
+
+    D4 --> I1
+    D1 -- No --> I1
+    I4 --> Ph5
+
+    %% ================= Phase 5 (Analysis is the absolute final step) =================
+    subgraph Ph5 [Phase 5: Structure Analysis]
+        direction TB
+        A1[PBC-Aware Union-Find]:::process --> A2[Compute Structure Metrics<br/>connectivity, contact, tunneling]:::process
+    end
+
+    A2 --> End([Output Final Voxel Grid & Metrics]):::terminal
+```
