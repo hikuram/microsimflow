@@ -240,7 +240,6 @@ def main():
             'physics_mode': args.physics_mode,
             'shell_count_grid': shell_count_grid,
             'filler_id': current_filler_id,
-            'inter_id': primary_inter_id,
             'tunnel_radius': args.tunnel_radius,
             'placement_registry': placement_registry
         }
@@ -278,7 +277,7 @@ def main():
                                   max_bend_deg=opts.get('max_bend_deg', 45), max_total_bends=opts.get('max_total_bends', 5),
                                   min_backbone_ratio=opts.get('min_backbone_ratio', 0.9), max_protrusion_ratio=protrusion_coef,
                                   log_file=build_log, physics_mode=args.physics_mode, shell_count_grid=shell_count_grid,
-                                  filler_id=current_filler_id, inter_id=primary_inter_id,
+                                  filler_id=current_filler_id,
                                   tunnel_radius=args.tunnel_radius)
                                   
         elif f_type == "flexfiber":
