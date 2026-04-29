@@ -6,22 +6,23 @@ To achieve high-density packing, physical accuracy, and seamless integration wit
 
 -----
 
-## 1\. Filler Geometry & Kinematic Standardization
+## 1. Filler Geometry & Kinematic Standardization
 
 Instead of drawing fillers directly into the massive global grid, the algorithm first generates a "stamp" in a localized bounding box. During this phase, the exact Center of Mass (CM) is mathematically standardized. *(Note: Topology-adaptive fibers bypass this module as they grow directly in the global grid).*
 
 | **Shape** | **Step 1: Skeleton / Orientation** | **Step 2: Voxel Rendering** | **Step 3: Kinematics Definition** | **Step 4: CM Standardization** |
 | :--- | :--- | :--- | :--- | :--- |
 | **Sphere** | Isotropic geometry; no orientation calculation needed. | Fill voxels satisfying `x^2 + y^2 + z^2 <= r^2` in the local grid. | No rotation or deformation. Local coordinates are fixed at `[0,0,0]`. | The geometric center aligns perfectly with the true Center of Mass (CM). |
-| **Flake** | Generate a rotation matrix `R_orig` from random Euler angles. | Apply inverse rotation to the coordinate grid and evaluate the disk equation (supports polar decomposition later). | Store `R_orig` to preserve rotational state. Local coordinate is `[0,0,0]`. | Geometric center is the CM. During affine stretch, polar decomposition extracts the pure rigid-body rotation to track orientation. |
-| **Staggered** (Layered Flakes) | Use `R_orig` as the base. Determine local centers by shifting along the Z-axis (layer thickness) and applying random XY offsets. | On the inverse-rotated grid, draw multiple disks based on the distance from each layer's local center. | Store the list of local center coordinates for all layers. | Calculate the true CM from the multi-layer distribution and strictly correct the center offset. |
-| **Rigid Fiber** | Generate a random directional vector. Create a straight backbone coordinate list by stepping forward until length *L* is reached. | Apply a fast "spherical brush" to each point on the backbone (bypassing slow dilation operations). | Store the straight backbone coordinate list. | Calculate the average of all backbone points to find the true CM and apply offset correction. |
+| **Flake** | Generate a rotation matrix `R_orig` using a **von Mises-Fisher (vMF) distribution** for targeted orientation control (`mean_dir`, `kappa`), replacing isotropic random Euler angles. | Apply inverse rotation to the coordinate grid and evaluate the disk equation. | Store `R_orig` to preserve rotational state. Local coordinate is `[0,0,0]`. | Geometric center is the CM. During affine stretch, polar decomposition extracts the pure rigid-body rotation to track orientation. |
+| **Irregular Fiber** | Use vMF-based `R_orig`. Generate 2D mathematical masks (ellipse, bean, or c-shape) extended along the local Z-axis. | Apply the specific mathematical mask to the inverse-rotated local coordinate grid. | Store `R_orig` to preserve the precise fiber axis orientation. Local coordinate is `[0,0,0]`. | The geometric center aligns with the CM. Polar decomposition guarantees the cross-section shape does not distort during affine stretching. |
+| **Staggered** (Layered Flakes) | Use vMF-based `R_orig` as the base. Determine local centers by shifting along the Z-axis (layer thickness) and applying random XY offsets. | On the inverse-rotated grid, draw multiple disks based on the distance from each layer's local center. | Store the list of local center coordinates for all layers. | Calculate the true CM from the multi-layer distribution and strictly correct the center offset. |
+| **Rigid Fiber** | Generate a directional vector based on vMF distribution. Create a straight backbone coordinate list by stepping forward until length *L* is reached. | Apply a fast "spherical brush" to each point on the backbone (bypassing slow dilation operations). | Store the straight backbone coordinate list. | Calculate the average of all backbone points to find the true CM and apply offset correction. |
 | **Flexible Fiber** | Based on straight steps, but injects random noise (bend angles) at certain probabilities to deflect the direction vector. | Apply the fast spherical brush to the bent backbone. | Store the bent backbone coordinate list (used later to enforce inextensibility during affine stretch). | Calculate the true CM of the bent shape, then crop empty margins of the voxel mask to standardize the bounding box. |
 | **Agglomerate** | Call the `Flexible Fiber` skeleton generator multiple times, shifting each by a random offset from a central point. | Generate masks for all individual fibers and overlay them in a single local grid. | Store a combined list of all fiber backbones. | Calculate the CM from all coordinates of all fibers in the bundle and correct the massive mask's offset. |
 
 -----
 
-## 2\. High-Performance Placement Logic (The RSA Core)
+## 2. High-Performance Placement Logic (The RSA Core)
 
 To prevent combinatorial explosion and computational bottlenecks during high-volume fraction packing, the placement loop utilizes advanced memory and caching optimizations.
 
@@ -36,9 +37,16 @@ To prevent combinatorial explosion and computational bottlenecks during high-vol
 
 -----
 
-## 3\. Unified Placement & Physics-Aware Interface Generation
+## 3. Unified Placement & Physics-Aware Interface Generation
 
-To maintain strict physical integrity, **the placement phase (Phase 1) is completely agnostic to the physics mode.** The algorithm guarantees that newly placed fillers *never* overwrite existing fillers, thereby protecting the target Volume Fraction (VF).
+To maintain strict physical integrity across solvers, voxels are mapped to specific structural IDs:
+* **`0`**: Polymer A (Matrix)
+* **`1`**: Polymer B (e.g., TPMS Interface)
+* **`2`**: **Secondary Interface** (Tunneling Gap / Kapitza Bridge)
+* **`3`**: **Primary Interface** (Direct Contact Overlap)
+* **`4+`**: Fillers
+
+**The placement phase (Phase 1) is completely agnostic to the physics mode.** The algorithm guarantees that newly placed fillers *never* overwrite existing fillers, thereby protecting the target Volume Fraction (VF).
 
 Instead of overwriting, the algorithm utilizes bitwise operations on an unsigned 8-bit integer array (`shell_count_grid`) to invisibly track overlaps and shell proximity. The physical meaning of these bits is interpreted later during the interface generation phase.
 
@@ -53,6 +61,28 @@ Once all fillers are placed, the bitwise data is decoded to construct physical i
 
 | **Process** | **Thermal Mode** (Heat Conduction) | **Electrical / Mechanics Mode** (Conductivity / Stiffness) |
 | :--- | :--- | :--- |
-| **Primary Interface**<br>*(Direct Contact)* | Extracts the `128` bit flag. Applies a Distance Transform to filter out massive bulk overlaps. Only thin contact zones (thickness \<= 1.5) are converted to Thermal Contact Resistance (Interface 1). Bulk overlaps are protected as filler material. | Extracts the lower 7 bits to find areas where shells overlap (`count >= 2`). Forms a temporary "Unified Interface." |
-| **Secondary Interface**<br>*(Proximity/Tunneling)* | Extracts the lower 7 bits. In the polymer space, areas with `count >= 2` are identified as Kapitza bridge candidates (Interface 2). | (Determined during the separation step below). |
-| **Targeted Cleanup & Separation** | **Isolated Execution:**<br>1. Protects the Primary interface (representing true physical touching).<br>2. Cleans up only the Secondary interface by removing 1-voxel islands and spikes to stabilize the FVM solver. | **Unified Execution & Split:**<br>1. Cleans up the temporary Unified Interface (removes slivers and spikes).<br>2. Dilates the filler bodies by 1 voxel.<br>3. Intersections between the dilation and the Unified Interface become the **Primary Interface**.<br>4. The remaining untouched Unified Interface becomes the **Secondary Interface** (Tunneling gap). |
+| **Primary Interface (ID: 3)**<br>*(Direct Contact)* | Extracts the `128` bit flag. Applies a Distance Transform to filter out massive bulk overlaps. Only thin contact zones (thickness <= 1.5) are converted to Thermal Contact Resistance (**ID: 3**). Bulk overlaps are protected as filler material. | Extracts the lower 7 bits to find areas where shells overlap (`count >= 2`). Forms a temporary "Unified Interface." |
+| **Secondary Interface (ID: 2)**<br>*(Proximity/Tunneling)* | Extracts the lower 7 bits. In the polymer space, areas with `count >= 2` are identified as Kapitza bridge candidates (**ID: 2**). | (Determined during the separation step below). |
+| **Targeted Cleanup & Separation** | **Isolated Execution:**<br>1. Protects the Primary interface (**ID: 3**).<br>2. Cleans up only the Secondary interface (**ID: 2**) by removing 1-voxel islands and spikes to stabilize the FVM solver. | **Unified Execution & Split:**<br>1. Cleans up the temporary Unified Interface (removes slivers and spikes).<br>2. Dilates the filler bodies by 1 voxel.<br>3. Intersections between the dilation and the Unified Interface become the **Primary Interface (ID: 3)**.<br>4. The remaining untouched Unified Interface becomes the **Secondary Interface (ID: 2)**. |
+
+-----
+
+## 4. Percolation and Structure Analysis
+
+To evaluate the percolation threshold and conductivity networks of the generated microstructure, a high-performance graph analysis algorithm is implemented.
+
+* **PBC-Aware Union-Find:** A Numba JIT-compiled algorithm (`label_pbc_6n_fast`) identifies connected conductive clusters using a 6-neighborhood structure. It strictly enforces Periodic Boundary Conditions (PBC), seamlessly wrapping connections across the grid boundaries.
+* **Metrics Extracted:**
+  * `connectivity_ratio`: The volume of the largest conductive cluster divided by the total volume of all conductive candidates (fillers + interfaces).
+  * `contact_ratio`: The ratio of the Primary Interface (ID: 3) voxels to the total filler voxels.
+  * `tunneling_ratio`: The ratio of the Secondary Interface (ID: 2) voxels to the total filler voxels.
+
+-----
+
+## 5. Affine Deformation & Rendering Module
+
+To support downstream mechanical experiments (e.g., studying changes in conductivity under strain), the placement registry dynamically redraws geometries into an affine-deformed grid.
+
+1. **Center of Mass Translation:** The absolute physical CM of each filler is mathematically shifted using the deformation gradient tensor (`F_mat`), accounting for the stretch ratio and Poisson's ratio.
+2. **Polar Decomposition:** `scipy.linalg.polar` extracts the pure rigid-body rotation ($R_{pure}$) from the combined `F_mat` and `R_orig`. This guarantees that rigid fillers like flakes or irregular fibers only rotate and never distort.
+3. **Dynamic Bounding Box Rendering:** The local kinematics are transformed, and the mask is redrawn *strictly* within a dynamically calculated, tightly cropped bounding box. This prevents memory explosions in large grids while perfectly preserving inextensibility and exact rigid-body volume.
