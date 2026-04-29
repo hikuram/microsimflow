@@ -184,7 +184,7 @@ def create_fiber_mask(length, radius, max_bend_deg=90, max_total_bends=10):
     }
     return cropped_mask, geom_data
 
-def create_agglomerate_mask(num_fibers, length, radius, max_bend_deg=90, max_total_bends=10, physics_mode='thermal', filler_id=4, inter_id=2):
+def create_agglomerate_mask(num_fibers, length, radius, max_bend_deg=90, max_total_bends=10, physics_mode='thermal', filler_id=4, inter_id=3):
     box_size = int(length + radius * 2 + 5)
     combined_mask = np.zeros((box_size, box_size, box_size), dtype=np.uint8)
     start_radius = radius * 2
