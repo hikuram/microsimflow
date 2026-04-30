@@ -1195,7 +1195,9 @@ def _render_and_paste_kinematics(comp_grid, shell_count_grid, P_CM_new, F_mat, g
         for bb in bbs_list:
             shifted_bb = bb - min_b
             for pt in shifted_bb:
-                gz, gy, gx = bz + int(round(pt[0])), by + int(round(pt[1])), bx + int(round(pt[2]))
+                gz = bz + int(round(pt[0])) - radius
+                gy = by + int(round(pt[1])) - radius
+                gx = bx + int(round(pt[2])) - radius
                 valid = (gz>=0)&(gz<box_shape[0])&(gy>=0)&(gy<box_shape[1])&(gx>=0)&(gx<box_shape[2])
                 mask[gz[valid], gy[valid], gx[valid]] = True
 
