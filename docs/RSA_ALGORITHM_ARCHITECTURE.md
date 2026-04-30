@@ -92,20 +92,20 @@ To support downstream mechanical experiments (e.g., studying changes in conducti
 ```mermaid
 %%{init: {'themeVariables': { 'fontFamily': 'Arial'}}}%%
 graph TD
-    %% Dark Mode Compatibility: Explicitly defining font color (#000000 or #ffffff) for contrast
     classDef process fill:#e1f5fe,stroke:#0288d1,stroke-width:1px,color:#000000;
     classDef decision fill:#fff9c4,stroke:#fbc02d,stroke-width:1px,color:#000000;
     classDef data fill:#e8f5e9,stroke:#388e3c,stroke-width:1px,color:#000000;
     classDef terminal fill:#37474f,stroke:#37474f,color:#ffffff,stroke-width:2px;
+    classDef highlight fill:#fce4ec,stroke:#c2185b,stroke-width:2px,color:#000000;
 
     Start([Start Generation]):::terminal --> Ph1
 
     %% ================= Phase 1 =================
     subgraph Ph1 [Phase 1: Geometry & Kinematics]
         direction TB
-        G1[Shape Selection]:::process --> G2[vMF Orientation Control]:::process
-        G2 --> G3[Mask / Skeleton Generation]:::process
-        G3 --> G4[Crop & CM Standardization]:::process
+        G1[Shape Selection]:::process --> G2["Unified Orientation Control<br/>(vMF / Pseudo-Watson)"]:::process
+        G2 --> G3["Geometry / Skeleton Generation<br/>(Includes Math-only Booleans)"]:::process
+        G3 --> G4["Crop & CM Standardization<br/>(Multi-point Kinematics Tracking)"]:::process
         G4 --> Cache[(Geometry Cache<br/>& Shell Offsets)]:::data
     end
 
@@ -115,6 +115,8 @@ graph TD
         R1[Sample Valid Coordinate in Matrix]:::process
         Cache -.-> R1
         R1 --> R2{Numba JIT Fast Check<br/>Overlap & Protrusion}:::decision
+        R2 -- "Fails > 500" --> R2a[Switch to Soft-Core<br/>Overlap Allowed]:::highlight
+        R2a --> R1
         R2 -- Collision / Out of bounds --> R1
         R2 -- Success --> R3[Bitwise Write to Grid]:::process
         R3 --> R4["Track Overlap |= 128<br/>Track Shell += 1"]:::process
@@ -124,14 +126,20 @@ graph TD
     Ph1 --> R1
     R4 -- Target VF Reached --> D1
 
-    %% ================= Phase 3 (Deformation happens BEFORE interfaces) =================
+    %% ================= Phase 3 =================
     subgraph Ph3 [Phase 3: Affine Deformation & Rendering]
         direction TB
-        D1{Mechanical Stretch<br/>Requested?}:::decision
+        D1{Mechanical Stretch<br/>Requested? λ ≠ 1.0}:::decision
         Registry -.-> D1
-        D1 -- Yes --> D2[CM Affine Translation]:::process
-        D2 --> D3[Polar Decomposition R_pure]:::process
-        D3 --> D4[Dynamic Bounding Box Redraw]:::process
+        
+        D1 -- Yes --> D1a{Deformation Mode}:::decision
+        
+        D1a -- Coarse --> DC[Paste Raw Offsets<br/>at Affine CM]:::process
+        
+        D1a -- Fine --> D2[CM Affine Translation]:::process
+        D2 --> D3[Rigid-Body Rotation<br/>via Polar Decomposition]:::process
+        D3 --> D_Tilt["2-Axis Tilt Compensation<br/>(Volume Ledger Check)"]:::highlight
+        D_Tilt --> D4[Dynamic Bounding Box Redraw]:::process
     end
 
     %% ================= Phase 4 =================
@@ -139,20 +147,24 @@ graph TD
         direction TB
         I1{Physics Mode?}:::decision
         
-        I1 -- Thermal --> I2[Extract overlap bit]:::process
-        I2 --> I3[Distance Transform & Clean]:::process
-        I3 --> I4[Assign Primary ID: 3<br/>& Secondary ID: 2]:::process
+        I1 -- Thermal --> I2["Extract overlap bit (|= 128)"]:::process
+        I2 --> I3["PBC-Aware Distance Transform<br/>(d <= 1.5)"]:::highlight
+        I3 --> I_Clean1["Sliver Fill, Spikes & Tiny Islands Cleanup"]:::process
+        I_Clean1 --> I_Heal["Restore deleted interface via<br/>Majority Filler Vote (np.argmax)"]:::highlight
+        I_Heal --> I4[Assign Primary ID: 3<br/>& Secondary ID: 2]:::process
         
-        I1 -- Electrical / Mechanics --> I5[Extract unified shell >= 2]:::process
-        I5 --> I6[Dilate Filler & Split Intersections]:::process
+        I1 -- Electrical / Mechanics --> I5["Extract unified shell (>= 2)"]:::process
+        I5 --> I_Clean2["Sliver Fill, Spikes & Tiny Islands Cleanup"]:::process
+        I_Clean2 --> I6[Dilate Filler & Split Intersections]:::process
         I6 --> I4
     end
 
     D4 --> I1
+    DC --> I1
     D1 -- No --> I1
     I4 --> Ph5
 
-    %% ================= Phase 5 (Analysis is the absolute final step) =================
+    %% ================= Phase 5 =================
     subgraph Ph5 [Phase 5: Structure Analysis]
         direction TB
         A1[PBC-Aware Union-Find]:::process --> A2[Compute Structure Metrics<br/>connectivity, contact, tunneling]:::process
