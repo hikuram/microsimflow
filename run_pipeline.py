@@ -99,6 +99,14 @@ Example: --recipe "rigidfiber:0.05:length=60:radius=2:prop=500.0" "flake:0.02:ra
                         help="List of stretch ratios (lambda) along X-axis to evaluate deformation (default: 1.0).")
     parser.add_argument("--poisson_ratio", type=float, default=0.4, 
                         help="Poisson's ratio (nu) for transverse compression during deformation (default: 0.4).")
+    parser.add_argument("--deformation_mode", type=str, default="fine", choices=["coarse", "fine"],
+                        help="Filler rendering mode for stretch ratios other than 1.0 (default: fine).")
+    parser.add_argument("--fine_volume_tol", type=float, default=0.01,
+                        help="Per-placement added-volume tolerance for fine deformation mode (default: 0.01).")
+    parser.add_argument("--fine_max_tilt_deg", type=float, default=0.10,
+                        help="Maximum two-axis tilt correction in degrees for fine deformation mode (default: 0.10).")
+    parser.add_argument("--fine_ledger_cap", type=float, default=0.01,
+                        help="Maximum per-placement ledger correction ratio in fine deformation mode (default: 0.01).")
     parser.add_argument("--overwrite_props", action="store_true", help="Overwrite .nf properties with command-line arguments during recalculation.")
     parser.add_argument("--skip_structure_metrics", action="store_true", help="Skip lightweight post-process structure metrics (enabled by default).")
     return parser.parse_args()
@@ -325,27 +333,37 @@ def main():
         current_step_logs = step_logs.copy()
         t_def = time.time()
         
-        # Deform ONLY the continuous polymer matrix
-        current_tpms = apply_background_deformation(tpms_grid, stretch, args.poisson_ratio)
+        if np.isclose(stretch, 1.0):
+            # Bypass all deformation and re-rendering at lambda = 1.0.
+            current_tpms = tpms_grid.copy()
+            current_comp = comp_grid.copy()
+            current_shell = shell_count_grid.copy()
+        else:
+            # Deform ONLY the continuous polymer matrix
+            current_tpms = apply_background_deformation(tpms_grid, stretch, args.poisson_ratio)
+            
+            # Initialize empty spaces for rigid fillers
+            current_comp = np.zeros_like(current_tpms)
+            
+            # Initialize shell grid unconditionally to re-render shells and overlaps during stretching
+            current_shell = np.zeros_like(current_tpms)
+            
+            # Redraw all rigid fillers using kinematic transformations
+            render_deformed_fillers(
+                placement_registry, 
+                base_shape=(args.size, args.size, args.size), 
+                stretch_ratio=stretch, 
+                poisson_ratio=args.poisson_ratio, 
+                comp_grid=current_comp, 
+                shell_count_grid=current_shell, 
+                tunnel_radius=args.tunnel_radius,
+                deformation_mode=args.deformation_mode,
+                fine_volume_tol=args.fine_volume_tol,
+                fine_max_tilt_deg=args.fine_max_tilt_deg,
+                fine_ledger_cap=args.fine_ledger_cap
+            )
         
-        # Initialize empty spaces for rigid fillers
-        current_comp = np.zeros_like(current_tpms)
-        
-        # Initialize shell grid unconditionally to re-render shells and overlaps during stretching
-        current_shell = np.zeros_like(current_tpms)
-        
-        # Redraw all rigid fillers using kinematic transformations
-        render_deformed_fillers(
-            placement_registry, 
-            base_shape=(args.size, args.size, args.size), 
-            stretch_ratio=stretch, 
-            poisson_ratio=args.poisson_ratio, 
-            comp_grid=current_comp, 
-            shell_count_grid=current_shell, 
-            tunnel_radius=args.tunnel_radius
-        )
-        
-        current_step_logs.append(f"Deformation({stretch}):{time.time() - t_def:.1f}s")
+        current_step_logs.append(f"Deformation({stretch},{args.deformation_mode}):{time.time() - t_def:.1f}s")
 
         # 4. Integration of final structure and creation of metadata
         final_grid = finalize_microstructure(

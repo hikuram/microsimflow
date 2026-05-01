@@ -436,7 +436,7 @@ def get_irregular_fiber_mask(length, shape_type='ellipse', radius_max=5.0, ratio
         r2 = Xr**2 + Yr**2
         angle = np.arctan2(Yr, Xr)
         # Literal 'C' shape to allow polymer/filler packing inside.
-        # 120-degree opening (cut out ±60 degrees), resulting in a typical 240-degree wrap.
+        # 120-degree opening (cut out +-60 degrees), resulting in a typical 240-degree wrap.
         xy_mask = (r2 <= radius_max**2) & (r2 >= r_in**2) & (np.abs(angle) > np.radians(60))
         
     else:
@@ -959,23 +959,36 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
                     # Increment shell count (lower 7 bits are safe to add to)
                     shell_count_grid[stz, sty, stx] += 1
             
-            # Reset cache and fails only on success (Keep cache if it's a sphere)
-            if current_geom_data.get('base_type') != 'sphere':
-                stamp_offsets = None 
-            consecutive_fails = 0
-            
-            # Record successful placement geometry
-            if placement_registry is not None:
-                placement_registry.append({
-                    'geom': current_geom_data,
-                    'center': (cz, cy, cx),
-                    'filler_id': filler_id
-                })
-
             # Update progress
             current_total = np.sum(comp_grid >= 2)
             added_voxels = current_total - placed_voxels
             placed_voxels = current_total
+
+            # Record successful placement geometry
+            if placement_registry is not None:
+                # Store the original stamp for coarse deformation mode.
+                raw_offsets = stamp_offsets.astype(np.int16, copy=True)
+                raw_vals = stamp_vals.astype(np.uint8, copy=True)
+                if shell_offsets is None:
+                    raw_shell_offsets = None
+                else:
+                    raw_shell_offsets = shell_offsets.astype(np.int16, copy=True)
+
+                placement_registry.append({
+                    'geom': current_geom_data,
+                    'center': (cz, cy, cx),
+                    'filler_id': filler_id,
+                    'raw_offsets': raw_offsets,
+                    'raw_vals': raw_vals,
+                    'raw_shell_offsets': raw_shell_offsets,
+                    'raw_voxel_count': int(len(raw_offsets)),
+                    'added_voxel_count': int(added_voxels)
+                })
+
+            # Reset cache and fails only on success (Keep cache if it's a sphere)
+            if current_geom_data.get('base_type') != 'sphere':
+                stamp_offsets = None 
+            consecutive_fails = 0
 
             if added_voxels > 0:
                 pbar.update(added_voxels)
@@ -1069,30 +1082,192 @@ def _paste_mask_to_grid(comp_grid, shell_count_grid, cz, cy, cx, mask, filler_id
         sx = (sh_offsets[:, 2] + cx) % shape[2]
         shell_count_grid[sz, sy, sx] += 1
 
-def _render_and_paste_kinematics(comp_grid, shell_count_grid, P_CM_new, F_mat, geom, item, tunnel_radius):
+def _paste_offsets_to_grid(comp_grid, shell_count_grid, cz, cy, cx, offsets, vals,
+                           filler_id, tunnel_radius, shell_offsets=None):
+    """Paste stored voxel offsets into the grid without re-voxelizing the filler."""
+    shape = comp_grid.shape
+    if offsets is None or len(offsets) == 0:
+        return 0
+
+    offsets = np.asarray(offsets)
+    gz = (offsets[:, 0] + cz) % shape[0]
+    gy = (offsets[:, 1] + cy) % shape[1]
+    gx = (offsets[:, 2] + cx) % shape[2]
+
+    contact = (comp_grid[gz, gy, gx] >= 2)
+
+    if shell_count_grid is not None:
+        # Set overlap flag using bitwise OR (128)
+        shell_count_grid[gz[contact], gy[contact], gx[contact]] |= 128
+
+    if vals is None:
+        paste_vals = np.full(len(offsets), filler_id, dtype=np.uint8)
+    else:
+        paste_vals = np.asarray(vals, dtype=np.uint8)
+
+    written = int(np.count_nonzero(~contact))
+    comp_grid[gz[~contact], gy[~contact], gx[~contact]] = paste_vals[~contact]
+
+    # Compute shell for all modes unconditionally
+    if shell_count_grid is not None and shell_offsets is not None:
+        shell_offsets = np.asarray(shell_offsets)
+        sz = (shell_offsets[:, 0] + cz) % shape[0]
+        sy = (shell_offsets[:, 1] + cy) % shape[1]
+        sx = (shell_offsets[:, 2] + cx) % shape[2]
+        shell_count_grid[sz, sy, sx] += 1
+
+    return written
+
+
+def _count_new_voxels_for_mask(comp_grid, cz, cy, cx, mask):
+    """Count voxels that would be newly occupied by a candidate mask."""
+    shape = comp_grid.shape
+    coords = np.argwhere(mask > 0)
+    if len(coords) == 0:
+        return 0
+
+    center = np.array(mask.shape) // 2
+    offsets = coords - center
+    gz = (offsets[:, 0] + cz) % shape[0]
+    gy = (offsets[:, 1] + cy) % shape[1]
+    gx = (offsets[:, 2] + cx) % shape[2]
+    return int(np.count_nonzero(comp_grid[gz, gy, gx] < 2))
+
+
+def _rotation_matrix_from_axis_angle(axis, angle_rad):
+    """Create a 3D rotation matrix from an axis and an angle."""
+    axis = np.asarray(axis, dtype=float)
+    norm = np.linalg.norm(axis)
+    if norm < 1e-12 or abs(angle_rad) < 1e-15:
+        return np.eye(3)
+
+    axis = axis / norm
+    x, y, z = axis
+    c = math.cos(angle_rad)
+    s = math.sin(angle_rad)
+    C = 1.0 - c
+    return np.array([
+        [c + x * x * C, x * y * C - z * s, x * z * C + y * s],
+        [y * x * C + z * s, c + y * y * C, y * z * C - x * s],
+        [z * x * C - y * s, z * y * C + x * s, c + z * z * C],
+    ])
+
+
+def _orthonormal_tilt_axes(main_axis):
+    """Return two unit axes perpendicular to the given main axis."""
+    main_axis = np.asarray(main_axis, dtype=float)
+    norm = np.linalg.norm(main_axis)
+    if norm < 1e-12:
+        main_axis = np.array([0.0, 0.0, 1.0])
+    else:
+        main_axis = main_axis / norm
+
+    ref = np.array([1.0, 0.0, 0.0])
+    if abs(np.dot(main_axis, ref)) > 0.9:
+        ref = np.array([0.0, 1.0, 0.0])
+
+    u_axis = np.cross(main_axis, ref)
+    u_axis /= np.linalg.norm(u_axis)
+    v_axis = np.cross(main_axis, u_axis)
+    v_axis /= np.linalg.norm(v_axis)
+    return u_axis, v_axis
+
+
+def _quick_tilt_candidates(main_axis, max_tilt_deg):
+    """Build small two-axis tilt candidates for fine deformation mode."""
+    u_axis, v_axis = _orthonormal_tilt_axes(main_axis)
+    candidates = [(np.eye(3), 0.0)]
+
+    base_levels = [0.10, 0.25, 0.50]
+    levels = [deg for deg in base_levels if deg <= max_tilt_deg + 1e-12]
+    if max_tilt_deg > 0 and not levels:
+        levels = [max_tilt_deg]
+    elif max_tilt_deg > 0 and levels and abs(levels[-1] - max_tilt_deg) > 1e-12 and max_tilt_deg < base_levels[-1]:
+        levels.append(max_tilt_deg)
+
+    for deg in levels:
+        for sign in (-1.0, 1.0):
+            angle_rad = math.radians(sign * deg)
+            candidates.append((_rotation_matrix_from_axis_angle(u_axis, angle_rad), deg))
+            candidates.append((_rotation_matrix_from_axis_angle(v_axis, angle_rad), deg))
+
+    return candidates
+
+
+def _pca_main_axis(points):
+    """Estimate the main axis of a point cloud."""
+    pts = np.asarray(points, dtype=float)
+    if pts.ndim != 2 or pts.shape[0] < 2:
+        return np.array([0.0, 0.0, 1.0])
+
+    pts = pts - np.mean(pts, axis=0)
+    if np.max(np.linalg.norm(pts, axis=1)) < 1e-12:
+        return np.array([0.0, 0.0, 1.0])
+
+    _, _, vh = np.linalg.svd(pts, full_matrices=False)
+    return vh[0]
+
+
+def _get_deformed_main_axis(geom, F_mat):
+    """Estimate the primary direction used by the two-axis tilt search."""
+    base_type = geom['base_type']
+    R_orig = np.array(geom.get('R_orig', np.eye(3)))
+    local_kinematics = geom.get('local_kinematics', [[0.0, 0.0, 0.0]])
+
+    if base_type in ['flake', 'staggered', 'irregular_fiber']:
+        R_local_to_global = np.array(R_orig)
+        R_pure_local_to_global, _ = polar(F_mat @ R_local_to_global)
+        return R_pure_local_to_global @ np.array([0.0, 0.0, 1.0])
+
+    if base_type == 'fiber':
+        lam = F_mat[2, 2]
+        lam_nu = F_mat[0, 0]
+        new_rel_bb = _transform_fiber_kinematics(np.array(local_kinematics), lam, lam_nu)
+        if len(new_rel_bb) >= 2:
+            axis = new_rel_bb[-1] - new_rel_bb[0]
+            if np.linalg.norm(axis) > 1e-12:
+                return axis
+        return _pca_main_axis(new_rel_bb)
+
+    if base_type == 'agglomerate':
+        lam = F_mat[2, 2]
+        lam_nu = F_mat[0, 0]
+        all_pts = []
+        for bb in local_kinematics:
+            new_rel_bb = _transform_fiber_kinematics(np.array(bb), lam, lam_nu)
+            all_pts.append(new_rel_bb)
+        return _pca_main_axis(np.vstack(all_pts))
+
+    return np.array([0.0, 0.0, 1.0])
+
+
+def _build_kinematic_mask(F_mat, geom, tilt_rotation=None):
     """
     Dynamically renders transformed local kinematics into a tight bounding box,
     drastically reducing memory overhead and preserving exact rigid-body volume.
     """
     base_type = geom['base_type']
-    R_orig = np.array(geom['R_orig'])
-    radius = geom['radius']
-    local_kinematics = geom['local_kinematics']
+    R_orig = np.array(geom.get('R_orig', np.eye(3)))
+    radius = geom.get('radius', 0)
+    local_kinematics = geom.get('local_kinematics', [[0.0, 0.0, 0.0]])
+    if tilt_rotation is None:
+        tilt_rotation = np.eye(3)
 
     if base_type in ['flake', 'staggered', 'irregular_fiber']:
         # Apply pure rigid-body rotation (Polar Decomposition) without the hacky transpose
         R_local_to_global = np.array(R_orig)
         R_pure_local_to_global, _ = polar(F_mat @ R_local_to_global)
+        R_pure_local_to_global = tilt_rotation @ R_pure_local_to_global
 
         loc_pts = np.array(local_kinematics)
         new_rel_global_centers = (R_pure_local_to_global @ loc_pts.T).T
-        
+
         # Dynamic bounding box based on transformed geometry
         if base_type == 'irregular_fiber':
             effective_radius = geom['length'] / 2.0 + radius
         else:
             effective_radius = radius
-        
+
         max_radius = effective_radius + 2
         min_b = np.floor(new_rel_global_centers.min(axis=0)).astype(int) - int(max_radius)
         max_b = np.ceil(new_rel_global_centers.max(axis=0)).astype(int) + int(max_radius)
@@ -1103,7 +1278,7 @@ def _render_and_paste_kinematics(comp_grid, shell_count_grid, P_CM_new, F_mat, g
 
         R_global_to_local = R_pure_local_to_global.T
         coords_local = R_global_to_local @ coords_global_shifted
-        
+
         # Assign coords_local[2] to Z_loc to match the primary axis in local space
         X_loc = coords_local[0,:].reshape(box_shape)
         Y_loc = coords_local[1,:].reshape(box_shape)
@@ -1127,34 +1302,35 @@ def _render_and_paste_kinematics(comp_grid, shell_count_grid, P_CM_new, F_mat, g
             r_max = geom['radius_max']
             ratio = geom['ratio']
             z_c, y_c, x_c = local_kinematics[0]
-            
+
             Z_rel = Z_loc - z_c
             Y_rel = Y_loc - y_c
             X_rel = X_loc - x_c
-            
+
             z_mask = np.abs(Z_rel) <= length / 2.0
-            
+
             if shape_type == 'ellipse':
                 r_min = r_max * ratio
                 xy_mask = (X_rel**2 / r_max**2 + Y_rel**2 / r_min**2 <= 1)
-                
+
             elif shape_type == 'bean':
                 r_min = r_max * ratio
                 # Bend the X direction proportionally to the square of Y (Kidney/Bean shape)
                 X_w = X_rel - 0.5 * (Y_rel**2 / r_max)
                 xy_mask = (X_w**2 / r_min**2 + Y_rel**2 / r_max**2 <= 1)
-                
+
             elif shape_type == 'c-shape':
                 r_in = r_max * ratio
                 r2 = X_rel**2 + Y_rel**2
                 angle = np.arctan2(Y_rel, X_rel)
-                # 120-degree opening (cut out ±60 degrees)
+                # 120-degree opening (cut out +/-60 degrees)
                 xy_mask = (r2 <= r_max**2) & (r2 >= r_in**2) & (np.abs(angle) > np.radians(60))
-                
+
             mask |= (xy_mask & z_mask)
 
         coords_nz = np.argwhere(mask > 0)
-        if len(coords_nz) == 0: return
+        if len(coords_nz) == 0:
+            return None, None
 
         c_mins = coords_nz.min(axis=0)
         c_maxs = coords_nz.max(axis=0)
@@ -1163,6 +1339,7 @@ def _render_and_paste_kinematics(comp_grid, shell_count_grid, P_CM_new, F_mat, g
         # Mathematically reverse-calculate exact paste target coordinates from the dynamic CM
         cm_in_cropped = -min_b - c_mins
         new_offset = cm_in_cropped - (np.array(cropped.shape) // 2)
+        return cropped, new_offset
 
     elif base_type in ['fiber', 'agglomerate']:
         lam = F_mat[2, 2]
@@ -1171,6 +1348,7 @@ def _render_and_paste_kinematics(comp_grid, shell_count_grid, P_CM_new, F_mat, g
         if base_type == 'fiber':
             new_rel_bb = _transform_fiber_kinematics(np.array(local_kinematics), lam, lam_nu)
             new_rel_bb -= np.mean(new_rel_bb, axis=0) # Strictly enforce rigid rotation around CM
+            new_rel_bb = (tilt_rotation @ new_rel_bb.T).T
             bbs_list = [new_rel_bb]
         else: # agglomerate
             bbs_list = []
@@ -1179,7 +1357,7 @@ def _render_and_paste_kinematics(comp_grid, shell_count_grid, P_CM_new, F_mat, g
                 bbs_list.append(new_rel_bb)
             all_pts = np.vstack(bbs_list)
             cm_shift = np.mean(all_pts, axis=0)
-            bbs_list = [bb - cm_shift for bb in bbs_list]
+            bbs_list = [((tilt_rotation @ (bb - cm_shift).T).T) for bb in bbs_list]
 
         all_pts = np.vstack(bbs_list)
         max_radius = radius + 2
@@ -1188,21 +1366,34 @@ def _render_and_paste_kinematics(comp_grid, shell_count_grid, P_CM_new, F_mat, g
         box_shape = tuple(max_b - min_b + 1)
 
         mask = np.zeros(box_shape, dtype=bool)
-        rz, ry, rx = np.ogrid[-radius:radius+1, -radius:radius+1, -radius:radius+1]
+        brush_radius = int(round(radius))
+
+        rz, ry, rx = np.ogrid[
+            -brush_radius:brush_radius+1,
+            -brush_radius:brush_radius+1,
+            -brush_radius:brush_radius+1
+        ]
         brush = rx**2 + ry**2 + rz**2 <= radius**2
         bz, by, bx = np.where(brush)
 
         for bb in bbs_list:
             shifted_bb = bb - min_b
             for pt in shifted_bb:
-                gz = bz + int(round(pt[0])) - radius
-                gy = by + int(round(pt[1])) - radius
-                gx = bx + int(round(pt[2])) - radius
-                valid = (gz>=0)&(gz<box_shape[0])&(gy>=0)&(gy<box_shape[1])&(gx>=0)&(gx<box_shape[2])
+
+                gz = bz + int(round(pt[0])) - brush_radius
+                gy = by + int(round(pt[1])) - brush_radius
+                gx = bx + int(round(pt[2])) - brush_radius
+
+                valid = (
+                    (gz >= 0) & (gz < box_shape[0]) &
+                    (gy >= 0) & (gy < box_shape[1]) &
+                    (gx >= 0) & (gx < box_shape[2])
+                )
                 mask[gz[valid], gy[valid], gx[valid]] = True
 
         coords_nz = np.argwhere(mask > 0)
-        if len(coords_nz) == 0: return
+        if len(coords_nz) == 0:
+            return None, None
 
         c_mins = coords_nz.min(axis=0)
         c_maxs = coords_nz.max(axis=0)
@@ -1210,23 +1401,129 @@ def _render_and_paste_kinematics(comp_grid, shell_count_grid, P_CM_new, F_mat, g
 
         cm_in_cropped = -min_b - c_mins
         new_offset = cm_in_cropped - (np.array(cropped.shape) // 2)
+        return cropped, new_offset
 
+    return None, None
+
+
+def _candidate_center_from_offset(P_CM_new, new_offset, grid_shape):
+    """Convert a candidate CM offset to a periodic paste center."""
     target_center_global = P_CM_new - new_offset
-    new_shape = comp_grid.shape
-    new_cz = int(round(target_center_global[0])) % new_shape[0]
-    new_cy = int(round(target_center_global[1])) % new_shape[1]
-    new_cx = int(round(target_center_global[2])) % new_shape[2]
+    return (
+        int(round(target_center_global[0])) % grid_shape[0],
+        int(round(target_center_global[1])) % grid_shape[1],
+        int(round(target_center_global[2])) % grid_shape[2],
+    )
 
+
+def _render_and_paste_kinematics(comp_grid, shell_count_grid, P_CM_new, F_mat, geom, item, tunnel_radius):
+    """
+    Dynamically renders transformed local kinematics into a tight bounding box,
+    drastically reducing memory overhead and preserving exact rigid-body volume.
+    """
+    cropped, new_offset = _build_kinematic_mask(F_mat, geom)
+    if cropped is None:
+        return 0
+
+    new_cz, new_cy, new_cx = _candidate_center_from_offset(P_CM_new, new_offset, comp_grid.shape)
+    before = _count_new_voxels_for_mask(comp_grid, new_cz, new_cy, new_cx, cropped)
     _paste_mask_to_grid(comp_grid, shell_count_grid, new_cz, new_cy, new_cx, cropped, item['filler_id'], tunnel_radius)
+    return before
 
-def render_deformed_fillers(placement_registry, base_shape, stretch_ratio, poisson_ratio, comp_grid, shell_count_grid, tunnel_radius=2):
+
+def _render_coarse_item(comp_grid, shell_count_grid, P_CM_new, geom, item, tunnel_radius):
+    """Render one item in coarse mode using the saved raw stamp offsets."""
+    raw_offsets = item.get('raw_offsets')
+    if raw_offsets is None:
+        return 0
+
+    offset = np.array(geom.get('offset_center_to_cm', [0, 0, 0]))
+    new_cz, new_cy, new_cx = _candidate_center_from_offset(P_CM_new, offset, comp_grid.shape)
+    return _paste_offsets_to_grid(
+        comp_grid, shell_count_grid, new_cz, new_cy, new_cx,
+        raw_offsets, item.get('raw_vals'), item['filler_id'], tunnel_radius,
+        shell_offsets=item.get('raw_shell_offsets')
+    )
+
+
+def _render_fine_item(comp_grid, shell_count_grid, P_CM_new, F_mat, geom, item,
+                      tunnel_radius, volume_error_ledger, fine_volume_tol,
+                      fine_max_tilt_deg, fine_ledger_cap):
+    """Render one item in fine mode using small two-axis tilt candidates."""
+    target_added = int(item.get('added_voxel_count', item.get('raw_voxel_count', 0)))
+
+    if geom['base_type'] == 'sphere':
+        # Spheres do not rotate, they only translate
+        offset = np.array(geom.get('offset_center_to_cm', [0, 0, 0]))
+        target = P_CM_new - offset
+        new_cz = int(round(target[0])) % comp_grid.shape[0]
+        new_cy = int(round(target[1])) % comp_grid.shape[1]
+        new_cx = int(round(target[2])) % comp_grid.shape[2]
+        mask, _ = get_sphere_mask(geom['radius'])
+        actual_added = _count_new_voxels_for_mask(comp_grid, new_cz, new_cy, new_cx, mask)
+        _paste_mask_to_grid(comp_grid, shell_count_grid, new_cz, new_cy, new_cx, mask, item['filler_id'], tunnel_radius)
+        return actual_added, 0.0, target_added
+
+    main_axis = _get_deformed_main_axis(geom, F_mat)
+    tilt_candidates = _quick_tilt_candidates(main_axis, fine_max_tilt_deg)
+
+    # The ledger is used gradually so that a single particle does not absorb all prior error.
+    local_cap = int(max(1, round(fine_ledger_cap * max(1, target_added))))
+    desired_added = target_added + int(np.clip(volume_error_ledger, -local_cap, local_cap))
+
+    best = None
+    for tilt_rotation, tilt_deg in tilt_candidates:
+        cropped, new_offset = _build_kinematic_mask(F_mat, geom, tilt_rotation=tilt_rotation)
+        if cropped is None:
+            continue
+
+        new_cz, new_cy, new_cx = _candidate_center_from_offset(P_CM_new, new_offset, comp_grid.shape)
+        candidate_added = _count_new_voxels_for_mask(comp_grid, new_cz, new_cy, new_cx, cropped)
+        score = (
+            abs(candidate_added - desired_added),
+            abs(tilt_deg),
+            abs(candidate_added - target_added),
+        )
+        if best is None or score < best['score']:
+            best = {
+                'score': score,
+                'mask': cropped,
+                'center': (new_cz, new_cy, new_cx),
+                'added': candidate_added,
+                'tilt_deg': tilt_deg,
+            }
+
+    if best is None:
+        # Fall back to coarse raw offsets if the fine renderer cannot build a mask.
+        actual_added = _render_coarse_item(comp_grid, shell_count_grid, P_CM_new, geom, item, tunnel_radius)
+        return actual_added, 0.0, target_added
+
+    new_cz, new_cy, new_cx = best['center']
+    _paste_mask_to_grid(comp_grid, shell_count_grid, new_cz, new_cy, new_cx,
+                        best['mask'], item['filler_id'], tunnel_radius)
+    return int(best['added']), float(best['tilt_deg']), target_added
+
+
+def render_deformed_fillers(placement_registry, base_shape, stretch_ratio, poisson_ratio,
+                            comp_grid, shell_count_grid, tunnel_radius=2,
+                            deformation_mode='fine', fine_volume_tol=0.01,
+                            fine_max_tilt_deg=0.5, fine_ledger_cap=0.05):
     """Renders rigid fillers into the deformed configuration."""
     lam = stretch_ratio
     lam_nu = stretch_ratio ** (-poisson_ratio)
     F_mat = np.diag([lam_nu, lam_nu, lam])
-    new_shape = comp_grid.shape
+    deformation_mode = str(deformation_mode).lower()
 
-    for item in tqdm(placement_registry, desc=f"Rendering Fillers (Stretch: {stretch_ratio})"):
+    if deformation_mode not in ('coarse', 'fine'):
+        raise ValueError("deformation_mode must be 'coarse' or 'fine'")
+
+    volume_error_ledger = 0
+    total_target_added = 0
+    total_actual_added = 0
+    max_abs_ledger = 0
+    out_of_tol_count = 0
+
+    for item in tqdm(placement_registry, desc=f"Rendering Fillers (Stretch: {stretch_ratio}, Mode: {deformation_mode})"):
         geom = item['geom']
         cz, cy, cx = item['center']
         offset = np.array(geom.get('offset_center_to_cm', [0, 0, 0]))
@@ -1237,14 +1534,28 @@ def render_deformed_fillers(placement_registry, base_shape, stretch_ratio, poiss
         # Affine translation of the physical CM
         P_CM_new = F_mat @ P_CM_global
 
-        if geom['base_type'] == 'sphere':
-            # Spheres do not rotate, they only translate
-            target = P_CM_new - offset
-            new_cz = int(round(target[0])) % new_shape[0]
-            new_cy = int(round(target[1])) % new_shape[1]
-            new_cx = int(round(target[2])) % new_shape[2]
-            mask, _ = get_sphere_mask(geom['radius'])
-            _paste_mask_to_grid(comp_grid, shell_count_grid, new_cz, new_cy, new_cx, mask, item['filler_id'], tunnel_radius)
-        else:
-            # Route all complex kinematics to the unified dynamic bounding box renderer
-            _render_and_paste_kinematics(comp_grid, shell_count_grid, P_CM_new, F_mat, geom, item, tunnel_radius)
+        if deformation_mode == 'coarse':
+            _render_coarse_item(comp_grid, shell_count_grid, P_CM_new, geom, item, tunnel_radius)
+            continue
+
+        actual_added, tilt_deg, target_added = _render_fine_item(
+            comp_grid, shell_count_grid, P_CM_new, F_mat, geom, item,
+            tunnel_radius, volume_error_ledger, fine_volume_tol,
+            fine_max_tilt_deg, fine_ledger_cap
+        )
+        total_target_added += target_added
+        total_actual_added += actual_added
+        volume_error_ledger += target_added - actual_added
+        max_abs_ledger = max(max_abs_ledger, abs(volume_error_ledger))
+
+        tol_voxels = max(1, int(math.ceil(fine_volume_tol * max(1, target_added))))
+        if abs(actual_added - target_added) > tol_voxels:
+            out_of_tol_count += 1
+
+    if deformation_mode == 'fine':
+        print(
+            f"Fine deformation volume summary: "
+            f"target_added={total_target_added}, actual_added={total_actual_added}, "
+            f"ledger={volume_error_ledger}, max_abs_ledger={max_abs_ledger}, "
+            f"out_of_tol_particles={out_of_tol_count}"
+        )
