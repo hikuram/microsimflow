@@ -795,10 +795,10 @@ def place_adaptive_fibers(comp_grid, tpms_grid, target_vol_frac, length, radius,
 @njit
 def _check_and_place_fast(comp_grid, tpms_grid, cz, cy, cx, 
                           stamp_offsets, stamp_vals, current_protrusion_limit, 
-                          overlap_mode, filler_id):
+                          filler_id):
     """
-    Numba-optimized JIT compiled function.
-    Performs boundary checks, collision detection, and voxel writing without Python loop overhead.
+    Numba-optimized JIT compiled function. (Strictly for Hardcore mode)
+    Performs boundary checks, strict collision detection (early exit), and voxel writing.
     """
     shape_z, shape_y, shape_x = comp_grid.shape
     num_coords = stamp_offsets.shape[0]
@@ -817,14 +817,13 @@ def _check_and_place_fast(comp_grid, tpms_grid, cz, cy, cx,
     if protrusion_count > num_coords * current_protrusion_limit:
         return False
         
-    # 2. Overlap Check (Only if overlap_mode is False)
-    if not overlap_mode:
-        for i in range(num_coords):
-            tz = (stamp_offsets[i, 0] + cz) % shape_z
-            ty = (stamp_offsets[i, 1] + cy) % shape_y
-            tx = (stamp_offsets[i, 2] + cx) % shape_x
-            if comp_grid[tz, ty, tx] >= 2:
-                return False # Immediate failure upon collision
+    # 2. Overlap Check (Strict Early Exit for Hardcore)
+    for i in range(num_coords):
+        tz = (stamp_offsets[i, 0] + cz) % shape_z
+        ty = (stamp_offsets[i, 1] + cy) % shape_y
+        tx = (stamp_offsets[i, 2] + cx) % shape_x
+        if comp_grid[tz, ty, tx] >= 2:
+            return False # Immediate failure upon collision
                 
     # 3. Write operation (Guaranteed to succeed at this point)
     for i in range(num_coords):
@@ -836,11 +835,68 @@ def _check_and_place_fast(comp_grid, tpms_grid, cz, cy, cx,
         new_val = stamp_vals[i]
         
         # Only write filler_id where space is empty (to protect existing VF).
-        # Overlap tracking is handled in the outer Python loop.
         if current_val < 2 and new_val > 0:
             comp_grid[tz, ty, tx] = new_val
 
     return True
+
+
+@njit
+def _evaluate_overlap_softcore_fast(comp_grid, tpms_grid, cz, cy, cx, 
+                                    stamp_offsets, current_protrusion_limit):
+    """
+    Numba-optimized JIT compiled function for Softcore evaluation (Best-of-N).
+    Returns -1 if protrusion limit is exceeded, otherwise returns the number of overlapping voxels.
+    """
+    shape_z, shape_y, shape_x = comp_grid.shape
+    num_coords = stamp_offsets.shape[0]
+    
+    # 1. Protrusion Check
+    protrusion_count = 0
+    for i in range(num_coords):
+        tz = (stamp_offsets[i, 0] + cz) % shape_z
+        ty = (stamp_offsets[i, 1] + cy) % shape_y
+        tx = (stamp_offsets[i, 2] + cx) % shape_x
+        
+        if tpms_grid[tz, ty, tx] == 1:
+            protrusion_count += 1
+            
+    if protrusion_count > num_coords * current_protrusion_limit:
+        return -1 # Failed protrusion check
+        
+    # 2. Count Overlaps
+    overlap_count = 0
+    for i in range(num_coords):
+        tz = (stamp_offsets[i, 0] + cz) % shape_z
+        ty = (stamp_offsets[i, 1] + cy) % shape_y
+        tx = (stamp_offsets[i, 2] + cx) % shape_x
+        if comp_grid[tz, ty, tx] >= 2:
+            overlap_count += 1
+            
+    return overlap_count
+
+
+@njit
+def _write_candidate_fast(comp_grid, cz, cy, cx, stamp_offsets, stamp_vals):
+    """
+    Numba-optimized JIT compiled function. 
+    Writes the selected best candidate to the grid.
+    """
+    shape_z, shape_y, shape_x = comp_grid.shape
+    num_coords = stamp_offsets.shape[0]
+    
+    for i in range(num_coords):
+        tz = (stamp_offsets[i, 0] + cz) % shape_z
+        ty = (stamp_offsets[i, 1] + cy) % shape_y
+        tx = (stamp_offsets[i, 2] + cx) % shape_x
+        
+        current_val = comp_grid[tz, ty, tx]
+        new_val = stamp_vals[i]
+        
+        # Only write filler_id where space is empty (to protect existing VF).
+        if current_val < 2 and new_val > 0:
+            comp_grid[tz, ty, tx] = new_val
+
 
 def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_frac,
                          max_attempts=1000000, fallback_func=None, desc="",
@@ -917,20 +973,49 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
                     shell_offsets = None
 
                 filler_voxels = len(coords)
-                # Note: Assuming calculate_protrusion_limit is defined elsewhere in the file
                 current_protrusion_limit = calculate_protrusion_limit(filler_voxels, total_voxels, protrusion_coef)
                 cache_reuse_count = 0
 
-            # Pick a random valid coordinate
-            idx = builder.rng.integers(0, num_valid_coords)
-            cz, cy, cx = valid_z[idx], valid_y[idx], valid_x[idx]
+            # Execute placement logic based on the current mode
+            if not overlap_mode:
+                # --- Hardcore Mode: Ultra-fast single random pick and strict placement ---
+                idx = builder.rng.integers(0, num_valid_coords)
+                cz, cy, cx = valid_z[idx], valid_y[idx], valid_x[idx]
 
-            # Execute Numba-optimized placement routine
-            success = _check_and_place_fast(
-                comp_grid, tpms_grid, cz, cy, cx, 
-                stamp_offsets, stamp_vals, current_protrusion_limit, 
-                overlap_mode, filler_id
-            )
+                success = _check_and_place_fast(
+                    comp_grid, tpms_grid, cz, cy, cx, 
+                    stamp_offsets, stamp_vals, current_protrusion_limit, 
+                    filler_id
+                )
+            else:
+                # --- Softcore Mode: Best-of-N (N=3) approach to minimize overlaps ---
+                best_score = float('inf')
+                best_coord = None
+                
+                # Sample 3 candidates
+                for _ in range(3):
+                    idx = builder.rng.integers(0, num_valid_coords)
+                    cand_z, cand_y, cand_x = valid_z[idx], valid_y[idx], valid_x[idx]
+                    
+                    score = _evaluate_overlap_softcore_fast(
+                        comp_grid, tpms_grid, cand_z, cand_y, cand_x, 
+                        stamp_offsets, current_protrusion_limit
+                    )
+                    
+                    # -1 means protrusion failed. Valid score implies acceptable boundary conditions
+                    if score != -1 and score < best_score:
+                        best_score = score
+                        best_coord = (cand_z, cand_y, cand_x)
+                        # Perfect spot found, no need to evaluate further
+                        if score == 0:
+                            break
+                            
+                if best_coord is not None:
+                    cz, cy, cx = best_coord
+                    _write_candidate_fast(comp_grid, cz, cy, cx, stamp_offsets, stamp_vals)
+                    success = True
+                else:
+                    success = False
 
             if not success:
                 cache_reuse_count += 1
@@ -940,13 +1025,11 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
             # Handle overlap tracking for Thermal mode and shell counting for all modes
             if shell_count_grid is not None:
                 # Identify where the newly placed stamp overlaps with existing fillers
-                # We calculate global coordinates of the stamp
                 stz_body = (stamp_offsets[:, 0] + cz) % shape[0]
                 sty_body = (stamp_offsets[:, 1] + cy) % shape[1]
                 stx_body = (stamp_offsets[:, 2] + cx) % shape[2]
                 
                 # Find voxels that were already occupied before this placement
-                # (Note: _check_and_place_fast didn't overwrite them)
                 contact_mask = (comp_grid[stz_body, sty_body, stx_body] >= 2)
                 
                 # Set the overlap flag (highest bit: 128)
