@@ -20,6 +20,11 @@ Instead of drawing fillers directly into the massive global grid, the algorithm 
 | **Flexible Fiber** | Based on straight steps, but injects random noise (bend angles) at certain probabilities to deflect the direction vector. | Apply the fast spherical brush to the bent backbone. | Store the bent backbone coordinate list (used later to enforce inextensibility during affine stretch). | Calculate the true CM of the bent shape, then crop empty margins of the voxel mask to standardize the bounding box. |
 | **Agglomerate** | Call the `Flexible Fiber` skeleton generator multiple times, shifting each by a random offset from a central point. | Generate masks for all individual fibers and overlay them in a single local grid. | Store a combined list of all fiber backbones. | Calculate the CM from all coordinates of all fibers in the bundle and correct the massive mask's offset. |
 
+**Advanced Kinematics & Generation Features:**
+* **Unified Orientation Control:** All anisotropic fillers utilize a unified distribution model. Setting `kappa > 0` generates von Mises-Fisher (vMF) polar alignment, while `kappa < 0` produces Pseudo-Watson equatorial/girdle alignment.
+* **Multi-point Kinematics Tracking:** Complex structures like `agglomerate` and `staggered` maintain arrays of local coordinates (`local_kinematics`), allowing individual constituents to be tracked and accurately repositioned during downstream affine deformation.
+* **Math-only Booleans for Irregular Shapes:** Irregular cross-sections (`bean`, `c-shape`) bypass expensive morphological dilations by directly evaluating pure mathematical boolean masks on the local coordinate grid.
+
 -----
 
 ## 2. High-Performance Placement Logic (The RSA Core)
@@ -34,6 +39,8 @@ To prevent combinatorial explosion and computational bottlenecks during high-vol
 | **4** | **Protrusion & Overlap Check** | Utilizing **Numba JIT compilation**, the core collision engine (`_check_and_place_fast`) operates purely on C-level array indexing. It instantly evaluates boundary protrusion and filler overlaps without ever performing expensive matrix copies or Python slicing. |
 | **5** | **Voxel Writing** | Upon clearing the checks, the algorithm writes the filler ID and shell data directly to the global `comp_grid` and `shell_count_grid`. |
 | **6** | **Placement Registry** | Upon success, it is not just voxels that are saved. The exact kinematics (`geom_data`) and target coordinates are logged in the `placement_registry`. Subsequent processes (like mechanical stretching) read this registry to redraw the geometry, ensuring perfect rigid-body mechanics. |
+
+* **Soft-Core Fallback (Overlap Tolerance):** To guarantee that the target Volume Fraction (VF) is achieved even in highly dense regimes, the algorithm tracks placement failures. If `consecutive_fails` exceeds 500, it automatically switches to a "Soft-Core" mode, allowing fillers to intersect while still strictly preventing protrusion beyond the permitted limits.
 
 -----
 
@@ -65,6 +72,18 @@ Once all fillers are placed, the bitwise data is decoded to construct physical i
 | **Secondary Interface (ID: 2)**<br>*(Proximity/Tunneling)* | Extracts the lower 7 bits. In the polymer space, areas with `count >= 2` are identified as Kapitza bridge candidates (**ID: 2**). | (Determined during the separation step below). |
 | **Targeted Cleanup & Separation** | **Isolated Execution:**<br>1. Protects the Primary interface (**ID: 3**).<br>2. Cleans up only the Secondary interface (**ID: 2**) by removing 1-voxel islands and spikes to stabilize the FVM solver. | **Unified Execution & Split:**<br>1. Cleans up the temporary Unified Interface (removes slivers and spikes).<br>2. Dilates the filler bodies by 1 voxel.<br>3. Intersections between the dilation and the Unified Interface become the **Primary Interface (ID: 3)**.<br>4. The remaining untouched Unified Interface becomes the **Secondary Interface (ID: 2)**. |
 
+**Robust Interface Cleanup & FVM/FEM Stabilization:**
+After initial interface identification, the algorithm applies a strict 3-stage cleanup pipeline to prevent solver divergence (e.g., zero-volume cells or singular matrices in chfem/PuMA):
+1. **Sliver Fill:** 1-voxel gaps of polymer trapped between fillers and interfaces are forcibly converted to interface material.
+2. **Spike Removal:** A 6-neighborhood convolution removes protruding burrs with fewer than 2 connections.
+3. **Island Cleanup:** Floating, unconnected interface voxels are eliminated.
+
+**Self-Healing Interfaces (Thermal Mode):** 
+If the cleanup pipeline deletes a primary interface voxel, it creates a void in the conduction path. To prevent this, the Thermal mode utilizes a `Majority Filler Vote` (`np.argmax` over 6-neighbors) to intelligently reassign the deleted interface voxel to the most dominant adjacent filler ID.
+
+**PBC-Aware Distance Transform:**
+To measure the direct contact thickness in Thermal mode accurately, the algorithm temporarily pads the global grid using `mode='wrap'` before executing the Distance Transform, ensuring flawless interface calculations across Periodic Boundary Conditions (PBC).
+
 -----
 
 ## 4. Percolation and Structure Analysis
@@ -81,31 +100,35 @@ To evaluate the percolation threshold and conductivity networks of the generated
 
 ## 5. Affine Deformation & Rendering Module
 
-To support downstream mechanical experiments (e.g., studying changes in conductivity under strain), the placement registry dynamically redraws geometries into an affine-deformed grid.
+To support downstream mechanical experiments, the placement registry dynamically redraws geometries into an affine-deformed grid. This module supports two distinct rendering modes:
 
-1. **Center of Mass Translation:** The absolute physical CM of each filler is mathematically shifted using the deformation gradient tensor (`F_mat`), accounting for the stretch ratio and Poisson's ratio.
-2. **Polar Decomposition:** `scipy.linalg.polar` extracts the pure rigid-body rotation ($R_{pure}$) from the combined `F_mat` and `R_orig`. This guarantees that rigid fillers like flakes or irregular fibers only rotate and never distort.
-3. **Dynamic Bounding Box Rendering:** The local kinematics are transformed, and the mask is redrawn *strictly* within a dynamically calculated, tightly cropped bounding box. This prevents memory explosions in large grids while perfectly preserving inextensibility and exact rigid-body volume.
+**A. Coarse Mode (High Performance):**
+Maps the original, unstretched voxel offsets (`raw_offsets`) directly to the newly translated physical Center of Mass (CM). It bypasses rotation calculations, offering extreme speed for rapid macroscopic network evaluations.
+
+**B. Fine Mode (Strict Rigid-Body Kinematics):**
+1. **CM Translation & Polar Decomposition:** The physical CM is shifted using the deformation gradient tensor (`F_mat`). `scipy.linalg.polar` extracts the pure rigid-body rotation to ensure fillers rotate without distortion.
+2. **Dynamic Bounding Box Rendering:** The local kinematics are transformed and redrawn strictly within a tightly cropped bounding box to prevent memory explosion.
+3. **Volume Ledger & Tilt Compensation:** Due to pixelation artifacts during rotation, voxel counts may fluctuate. The algorithm tracks this deviation globally via a `volume_error_ledger`. If a placement deviates beyond a tolerance (`fine_volume_tol`), the algorithm evaluates small 2-axis tilt compensations to select the mask that best neutralizes the cumulative volume error, rigorously protecting the target VF.
 
 -----
 
 ```mermaid
 %%{init: {'themeVariables': { 'fontFamily': 'Arial'}}}%%
 graph TD
-    %% Dark Mode Compatibility: Explicitly defining font color (#000000 or #ffffff) for contrast
     classDef process fill:#e1f5fe,stroke:#0288d1,stroke-width:1px,color:#000000;
     classDef decision fill:#fff9c4,stroke:#fbc02d,stroke-width:1px,color:#000000;
     classDef data fill:#e8f5e9,stroke:#388e3c,stroke-width:1px,color:#000000;
     classDef terminal fill:#37474f,stroke:#37474f,color:#ffffff,stroke-width:2px;
+    classDef highlight fill:#fce4ec,stroke:#c2185b,stroke-width:2px,color:#000000;
 
     Start([Start Generation]):::terminal --> Ph1
 
     %% ================= Phase 1 =================
     subgraph Ph1 [Phase 1: Geometry & Kinematics]
         direction TB
-        G1[Shape Selection]:::process --> G2[vMF Orientation Control]:::process
-        G2 --> G3[Mask / Skeleton Generation]:::process
-        G3 --> G4[Crop & CM Standardization]:::process
+        G1[Shape Selection]:::process --> G2["Unified Orientation Control<br/>(vMF / Pseudo-Watson)"]:::process
+        G2 --> G3["Geometry / Skeleton Generation<br/>(Includes Math-only Booleans)"]:::process
+        G3 --> G4["Crop & CM Standardization<br/>(Multi-point Kinematics Tracking)"]:::process
         G4 --> Cache[(Geometry Cache<br/>& Shell Offsets)]:::data
     end
 
@@ -115,6 +138,8 @@ graph TD
         R1[Sample Valid Coordinate in Matrix]:::process
         Cache -.-> R1
         R1 --> R2{Numba JIT Fast Check<br/>Overlap & Protrusion}:::decision
+        R2 -- "Fails > 500" --> R2a[Switch to Soft-Core<br/>Overlap Allowed]:::highlight
+        R2a --> R1
         R2 -- Collision / Out of bounds --> R1
         R2 -- Success --> R3[Bitwise Write to Grid]:::process
         R3 --> R4["Track Overlap |= 128<br/>Track Shell += 1"]:::process
@@ -124,14 +149,20 @@ graph TD
     Ph1 --> R1
     R4 -- Target VF Reached --> D1
 
-    %% ================= Phase 3 (Deformation happens BEFORE interfaces) =================
+    %% ================= Phase 3 =================
     subgraph Ph3 [Phase 3: Affine Deformation & Rendering]
         direction TB
-        D1{Mechanical Stretch<br/>Requested?}:::decision
+        D1{Mechanical Stretch<br/>Requested? λ ≠ 1.0}:::decision
         Registry -.-> D1
-        D1 -- Yes --> D2[CM Affine Translation]:::process
-        D2 --> D3[Polar Decomposition R_pure]:::process
-        D3 --> D4[Dynamic Bounding Box Redraw]:::process
+        
+        D1 -- Yes --> D1a{Deformation Mode}:::decision
+        
+        D1a -- Coarse --> DC[Paste Raw Offsets<br/>at Affine CM]:::process
+        
+        D1a -- Fine --> D2[CM Affine Translation]:::process
+        D2 --> D3[Rigid-Body Rotation<br/>via Polar Decomposition]:::process
+        D3 --> D_Tilt["2-Axis Tilt Compensation<br/>(Volume Ledger Check)"]:::highlight
+        D_Tilt --> D4[Dynamic Bounding Box Redraw]:::process
     end
 
     %% ================= Phase 4 =================
@@ -139,20 +170,24 @@ graph TD
         direction TB
         I1{Physics Mode?}:::decision
         
-        I1 -- Thermal --> I2[Extract overlap bit]:::process
-        I2 --> I3[Distance Transform & Clean]:::process
-        I3 --> I4[Assign Primary ID: 3<br/>& Secondary ID: 2]:::process
+        I1 -- Thermal --> I2["Extract overlap bit (|= 128)"]:::process
+        I2 --> I3["PBC-Aware Distance Transform<br/>(d <= 1.5)"]:::highlight
+        I3 --> I_Clean1["Sliver Fill, Spikes & Tiny Islands Cleanup"]:::process
+        I_Clean1 --> I_Heal["Restore deleted interface via<br/>Majority Filler Vote (np.argmax)"]:::highlight
+        I_Heal --> I4[Assign Primary ID: 3<br/>& Secondary ID: 2]:::process
         
-        I1 -- Electrical / Mechanics --> I5[Extract unified shell >= 2]:::process
-        I5 --> I6[Dilate Filler & Split Intersections]:::process
+        I1 -- Electrical / Mechanics --> I5["Extract unified shell (>= 2)"]:::process
+        I5 --> I_Clean2["Sliver Fill, Spikes & Tiny Islands Cleanup"]:::process
+        I_Clean2 --> I6[Dilate Filler & Split Intersections]:::process
         I6 --> I4
     end
 
     D4 --> I1
+    DC --> I1
     D1 -- No --> I1
     I4 --> Ph5
 
-    %% ================= Phase 5 (Analysis is the absolute final step) =================
+    %% ================= Phase 5 =================
     subgraph Ph5 [Phase 5: Structure Analysis]
         direction TB
         A1[PBC-Aware Union-Find]:::process --> A2[Compute Structure Metrics<br/>connectivity, contact, tunneling]:::process
