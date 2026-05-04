@@ -80,6 +80,8 @@ Example: --recipe "rigidfiber:0.05:length=60:radius=2:prop=500.0" "flake:0.02:ra
     
     parser.add_argument("--basename", type=str, default="model", help="Base filename for generated files (default: 'model').")
     parser.add_argument("--csv_log", type=str, default="comparison_results.csv", help="CSV file to append/update results (default: 'comparison_results.csv').")
+    parser.add_argument("--vti_fields", type=str, default="on", choices=["on", "off"],
+                        help="Embed additional physical fields (pressure, velocity, etc.) into VTI (default: on).")
     parser.add_argument("--physics_mode", type=str, default="thermal",
                         choices=["thermal", "electrical", "mechanics", "permeability"],
                         help="Physics mode which defines interface handling and default properties (default: thermal).")
@@ -476,6 +478,59 @@ def main():
                     puma_time = f"{ptime:.2f}"
                     # PuMA (Laplace) only provides 3 diagonal components
                     puma_results = [pkx, pky, pkz, "", "", ""]
+                    
+        # =====================================================================
+        # --- Extract and embed physical fields into VTI ---
+        # =====================================================================
+        extra_viz_fields = {}
+        if args.vti_fields == "on" and args.solver in ["chfem", "both"]:
+            print(f"  -> Scanning for physical field outputs to embed in VTI...")
+
+            # Mapping of physics modes to their respective chfem output files and components
+            field_mappings = {
+                'permeability': {
+                    'Pressure': (f"{current_basename}_pressure_0.bin", 1),
+                    'Velocity': (f"{current_basename}_velocity_0.bin", 3)
+                },
+                'thermal': {
+                    'Temperature': (f"{current_basename}_temperature_0.bin", 1),
+                    'Heat_Flux': (f"{current_basename}_heat_flux_0.bin", 3)
+                },
+                'electrical': {
+                    'Potential': (f"{current_basename}_potential_0.bin", 1),
+                    'Electric_Current': (f"{current_basename}_electric_current_0.bin", 3)
+                },
+                'mechanics': {
+                    'Displacement': (f"{current_basename}_displacement_0.bin", 3),
+                    'Stress': (f"{current_basename}_stress_0.bin", 6)
+                }
+            }
+
+            if args.physics_mode in field_mappings:
+                for field_name, (file_path, comps) in field_mappings[args.physics_mode].items():
+                    if os.path.exists(file_path):
+                        try:
+                            # Load binary data (chfem uses float64 by default)
+                            raw_data = np.fromfile(file_path, dtype=np.float64)
+                            if comps == 1:
+                                field_data = raw_data.reshape(final_grid.shape)
+                            else:
+                                field_data = raw_data.reshape((*final_grid.shape, comps))
+                            
+                            extra_viz_fields[field_name] = field_data
+                            print(f"    - Imported field: {field_name} from {file_path}")
+                        except Exception as e:
+                            print(f"    - Failed to import field {field_name}: {e}")
+            
+            # Re-export VTI with the extra fields included
+            if extra_viz_fields:
+                export_visualization_vti(
+                    final_grid, vti_filename, 
+                    voxel_size=args.voxel_size, 
+                    metadata=metadata, 
+                    extra_fields=extra_viz_fields
+                )
+                print(f"  -> Updated VTI with physical fields: {vti_filename}")
 
         file_exists = os.path.isfile(args.csv_log)
         with open(args.csv_log, mode='a', newline='', encoding='utf-8') as f:
