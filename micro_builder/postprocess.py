@@ -361,7 +361,12 @@ def export_chfem_inputs(final_grid, base_filename="model", voxel_size=1e-8, phys
     nf_filename = f"{base_filename}.nf"
     shape = final_grid.shape
 
-    analysis_type = 1 if physics_mode == 'mechanics' else 0
+    if physics_mode == 'mechanics':
+        analysis_type = 1
+    elif physics_mode == 'permeability':
+        analysis_type = 2
+    else:
+        analysis_type = 0
     num_materials = len(prop_map)
 
     # Serialize physical properties respecting ascending dictionary ID order
