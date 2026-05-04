@@ -324,12 +324,14 @@ def compute_structure_metrics(final_grid, primary_inter_id=3, secondary_inter_id
         'n_conductive_clusters': int(num_conductive_clusters),
     }
 
-def export_visualization_vti(final_grid, filename="microstructure.vti", voxel_size=1e-8, metadata=None):
+def export_visualization_vti(final_grid, filename="microstructure.vti", voxel_size=1e-8, metadata=None, extra_fields=None):
     """
     Export the 3D grid to VTI format optimized for ParaView visualization.
     Embeds physical dimensions and metric metadata into Field Data for HUD overlay.
+    extra_fields: dict { "Field_Name": numpy_array } for additional physics fields.
     """
     import pyvista as pv
+    import numpy as np
 
     grid = pv.ImageData()
     
@@ -344,6 +346,20 @@ def export_visualization_vti(final_grid, filename="microstructure.vti", voxel_si
     # Store phase ID in cell_data
     grid.cell_data["Phase"] = final_grid.flatten(order="C")
     
+    # --- Embed additional physical fields (pressure, velocity, etc.) ---
+    if extra_fields:
+        for field_name, field_data in extra_fields.items():
+            # Check if scalar (matches grid size)
+            if field_data.ndim == 3 and field_data.size == final_grid.size:
+                grid.cell_data[field_name] = field_data.flatten(order="C")
+            # Check if vector or tensor (matches grid size * components)
+            elif field_data.ndim == 4 and field_data.shape[:3] == final_grid.shape:
+                comp = field_data.shape[-1]
+                # PyVista expects (-1, comp) shape for multi-component cell_data
+                grid.cell_data[field_name] = field_data.reshape(-1, comp, order="C")
+            else:
+                print(f"Warning: Field '{field_name}' shape {field_data.shape} mismatch. Skipping.")
+
     # Embed tracking metadata
     if metadata:
         for key, value in metadata.items():
