@@ -1,5 +1,30 @@
 # Output Data & CSV Reference
 
+## VTI Visualization Output
+
+Along with the CSV log, `microsimflow` generates a 3D visualization file in VTI format (`[basename].vti`) and a corresponding VTM wrapper for time-series/stretch evaluation in ParaView.
+
+By default, if the computational solvers are executed, the pipeline will automatically extract the resulting physical fields (e.g., pressure, temperature, stress) and embed them directly into the VTI file's `cell_data`. This allows you to seamlessly visualize both the microstructure's phase geometry and its physical response simultaneously.
+
+> **Optional Control (`--vti_fields`):**
+> Embedding these fields can significantly increase the `.vti` file size. You can control this behavior using the `--vti_fields [on/off]` argument. Setting it to `off` will only export the structural `Phase` ID.
+
+### Available Physical Fields in VTI
+
+Depending on the selected `--physics_mode`, the following fields are automatically mapped and embedded from the solver's binary outputs:
+
+| Physics Mode | VTI Field Name | Type | chfem Output Binary | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| **All Modes** | `Phase` | Scalar | *(Generated Internally)* | Voxel-based structural phase ID |
+| **Permeability** | `Pressure` | Scalar | `[basename]_pressure_0.bin` | Fluid pressure distribution |
+| | `Velocity` | Vector | `[basename]_velocity_0.bin` | Fluid velocity vector (Vx, Vy, Vz) |
+| **Thermal** | `Temperature` | Scalar | `[basename]_temperature_0.bin` | Temperature distribution |
+| | `Heat_Flux` | Vector | `[basename]_heat_flux_0.bin` | Heat flux vector |
+| **Electrical** | `Potential` | Scalar | `[basename]_potential_0.bin` | Electric potential distribution |
+| | `Electric_Current` | Vector | `[basename]_electric_current_0.bin` | Electric current density vector |
+| **Mechanics** | `Displacement` | Vector | `[basename]_displacement_0.bin` | Displacement vector |
+| | `Stress` | Tensor | `[basename]_stress_0.bin` | Stress tensor (6 components: xx, yy, zz, yz, zx, xy) |
+
 ## CSV Output Reference
 
 The central CSV log is intended to be both machine-readable and easy to audit manually.
