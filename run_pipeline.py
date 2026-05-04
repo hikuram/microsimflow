@@ -81,8 +81,10 @@ Example: --recipe "rigidfiber:0.05:length=60:radius=2:prop=500.0" "flake:0.02:ra
     parser.add_argument("--basename", type=str, default="model", help="Base filename for generated files (default: 'model').")
     parser.add_argument("--csv_log", type=str, default="comparison_results.csv", help="CSV file to append/update results (default: 'comparison_results.csv').")
     parser.add_argument("--physics_mode", type=str, default="thermal",
-                        choices=["thermal", "electrical", "mechanics"],
+                        choices=["thermal", "electrical", "mechanics", "permeability"],
                         help="Physics mode which defines interface handling and default properties (default: thermal).")
+    parser.add_argument("--void_phases", type=int, nargs='+', default=[0], 
+                        help="Phase IDs to be treated as void (fluid) in permeability mode. Default is Phase 0 (Polymer A).")
     parser.add_argument("--solver", type=str, default="both",
                         choices=["chfem", "puma", "both", "skip"],
                         help="Solver for homogenisation. Use 'skip' to only build the model without running solvers (default: both).")
@@ -130,7 +132,7 @@ def main():
     export_common_legend()
     
     # Set default physical properties according to the physics mode
-    if args.physics_mode == 'thermal':
+    if args.physics_mode in ['mechanics', 'permeability']:
         prop_A = args.prop_A or "0.3"
         prop_B = args.prop_B or "0.3"
         prop_secondary_inter = args.prop_inter2 or "3.0"
@@ -441,8 +443,19 @@ def main():
         chfem_results = [""] * 6
         puma_time = ""
         puma_results = [""] * 6
-
-        export_chfem_inputs(final_grid, current_basename, voxel_size=args.voxel_size, physics_mode=args.physics_mode, prop_map=prop_map)
+        
+        # --- Binarization for permeability mode ---
+        if args.physics_mode == 'permeability':
+            print(f"  -> Binarizing grid for permeability mode (Void phases: {args.void_phases})")
+            export_grid = np.zeros_like(final_grid)
+            for vp in args.void_phases:
+                export_grid[final_grid == vp] = 1
+            export_prop_map = {0: "0.0", 1: "1.0"} 
+        else:
+            export_grid = final_grid
+            export_prop_map = prop_map
+            
+        export_chfem_inputs(export_grid, current_basename, voxel_size=args.voxel_size, physics_mode=args.physics_mode, prop_map=export_prop_map)
         
         if args.solver in ["chfem", "both"]:
             log_file = f"{current_basename}_metrics.txt"
