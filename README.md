@@ -39,7 +39,7 @@ For detailed usage, recipes, and architecture, please refer to the `docs/` direc
 * **Core**: `numpy`, `scipy`, `pandas`
 * **Acceleration**: `numba` (JIT compilation for ultra-fast voxel collision detection and RSA placement)
 * **Visualization & Plotting**: 
-  * `pyvista`: Exporting standardized 3D visual data (`.vti`, `.vtm`) for ParaView.
+  * `pyvista`: Exporting standardized 3D visual data (`.vtkhdf`) for ParaView.
   * `matplotlib`, `seaborn`: Generating statistical charts.
   * `pillow`: Image processing for 2D visual montages.
 * **Utilities**: `tqdm` (CLI progress), `jupyterlab` (Notebook execution)
