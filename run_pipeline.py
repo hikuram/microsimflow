@@ -28,7 +28,7 @@ from micro_builder import (
     get_staggered_flakes_mask,
     finalize_microstructure,
     export_chfem_inputs,
-    export_visualization_vti,
+    export_visualization_vtkhdf,
     summarize_phase_fractions,
     compute_structure_metrics,
     apply_background_deformation,
@@ -81,8 +81,8 @@ Example: --recipe "rigidfiber:0.05:length=60:radius=2:prop=500.0" "flake:0.02:ra
     
     parser.add_argument("--basename", type=str, default="model", help="Base filename for generated files (default: 'model').")
     parser.add_argument("--csv_log", type=str, default="comparison_results.csv", help="CSV file to append/update results (default: 'comparison_results.csv').")
-    parser.add_argument("--vti_fields", type=str, default="on", choices=["on", "off"],
-                        help="Embed additional physical fields (pressure, velocity, etc.) into VTI (default: on).")
+    parser.add_argument("--vtkhdf_fields", type=str, default="on", choices=["on", "off"],
+                        help="Embed additional physical fields (pressure, velocity, etc.) into VTKHDF (default: on).")
     parser.add_argument("--physics_mode", type=str, default="thermal",
                         choices=["thermal", "electrical", "mechanics", "permeability"],
                         help="Physics mode which defines interface handling and default properties (default: thermal).")
@@ -417,9 +417,9 @@ def main():
             "Poisson_Ratio": str(args.poisson_ratio) if stretch != 1.0 else "N/A",
         }
         
-        # Export VTI for visualization (in the specified directory)
-        vti_filename = f"{current_basename}.vti"
-        export_visualization_vti(final_grid, vti_filename, voxel_size=args.voxel_size, metadata=metadata)
+        # Export VTKHDF for visualization (in the specified directory)
+        vtkhdf_filename = f"{current_basename}.vtkhdf"
+        export_visualization_vtkhdf(final_grid, vtkhdf_filename, voxel_size=args.voxel_size, metadata=metadata)
         
         # --- Create VTM wrapper and update PVD in the 'vtm/' subdirectory ---
         # Extract the directory path from current_basename
@@ -427,10 +427,10 @@ def main():
         file_stem = os.path.basename(current_basename)
         base_stem = os.path.basename(args.basename)
         
-        # Determine the target vtm directory (one level below the VTI file)
+        # Determine the target vtm directory (one level below the VTKHDF file)
         wrapper_dir = os.path.join(base_dir, "vtm") if base_dir else "vtm"
         vtm_filename = os.path.join(wrapper_dir, f"{file_stem}.vtm")
-        export_vtm_wrapper(vti_filename, vtm_filename)
+        export_vtm_wrapper(vtkhdf_filename, vtm_filename)
         
         # Use the stretch ratio as the timestep value
         pvd_filename = os.path.join(wrapper_dir, f"{base_stem}.pvd")
@@ -463,9 +463,9 @@ def main():
         if args.solver in ["chfem", "both"]:
             log_file = f"{current_basename}_metrics.txt"
             
-            # Dynamically build the command. Add '-e' (export) only if VTI fields are requested.
+            # Dynamically build the command. Add '-e' (export) only if VTKHDF fields are requested.
             chfem_cmd = ["chfem_exec", f"{current_basename}.nf", f"{current_basename}.raw", "-m", log_file]
-            if args.vti_fields == "on":
+            if args.vtkhdf_fields == "on":
                 chfem_cmd.insert(3, "-e")
                 
             subprocess.run(chfem_cmd)
@@ -488,11 +488,11 @@ def main():
                     puma_results = [pkx, pky, pkz, "", "", ""]
 
         # =====================================================================
-        # --- Extract and embed physical fields into VTI ---
+        # --- Extract and embed physical fields into VTKHDF ---
         # =====================================================================
         extra_viz_fields = {}
-        if args.vti_fields == "on" and args.solver in ["chfem", "both"]:
-            print(f"  -> Scanning for physical field outputs to embed in VTI...")
+        if args.vtkhdf_fields == "on" and args.solver in ["chfem", "both"]:
+            print(f"  -> Scanning for physical field outputs to embed in VTKHDF...")
 
             # Mapping of physics modes to their respective chfem output files and components
             field_mappings = {
@@ -544,15 +544,15 @@ def main():
                     print("    ! Warning: No binary output files were found.")
                     print("    ! Make sure chfem_exec is executed with the export flag (e.g., '-e').")
             
-            # Re-export VTI with the extra fields included
+            # Re-export VTKHDF with the extra fields included
             if extra_viz_fields:
-                export_visualization_vti(
-                    final_grid, vti_filename, 
+                export_visualization_vtkhdf(
+                    final_grid, vtkhdf_filename, 
                     voxel_size=args.voxel_size, 
                     metadata=metadata, 
                     extra_fields=extra_viz_fields
                 )
-                print(f"  -> Updated VTI with physical fields: {vti_filename}")
+                print(f"  -> Updated VTKHDF with physical fields: {vtkhdf_filename}")
                 
             # --- CLEANUP: Remove raw binary files generated by chfem ---
             bin_files = glob.glob(f"{current_basename}_*.bin")
