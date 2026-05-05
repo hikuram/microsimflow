@@ -1,19 +1,19 @@
 # Output Data & CSV Reference
 
-## VTI Visualization Output
+## VTKHDF Visualization Output
 
-Along with the CSV log, `microsimflow` generates a 3D visualization file in VTI format (`[basename].vti`) and a corresponding VTM wrapper for time-series/stretch evaluation in ParaView.
+Along with the CSV log, `microsimflow` generates a 3D visualization file in VTKHDF format (`[basename].vtkhdf`) and a corresponding VTM wrapper for time-series/stretch evaluation in ParaView.
 
-By default, if the computational solvers are executed, the pipeline will automatically extract the resulting physical fields (e.g., pressure, temperature, stress) and embed them directly into the VTI file's `cell_data`. This allows you to seamlessly visualize both the microstructure's phase geometry and its physical response simultaneously.
+By default, if the computational solvers are executed, the pipeline will automatically extract the resulting physical fields (e.g., pressure, temperature, stress) and embed them directly into the VTKHDF file's `cell_data`. This allows you to seamlessly visualize both the microstructure's phase geometry and its physical response simultaneously.
 
-> **Optional Control (`--vti_fields`):**
-> Embedding these fields can significantly increase the `.vti` file size. You can control this behavior using the `--vti_fields [on/off]` argument. Setting it to `off` will only export the structural `Phase` ID.
+> **Optional Control (`--vtkhdf_fields`):**
+> Embedding these fields can significantly increase the `.vtkhdf` file size. You can control this behavior using the `--vtkhdf_fields [on/off]` argument. Setting it to `off` will only export the structural `Phase` ID.
 
-### Available Physical Fields in VTI
+### Available Physical Fields in VTKHDF
 
 Depending on the selected `--physics_mode`, the following fields are automatically mapped and embedded from the solver's binary outputs:
 
-| Physics Mode | VTI Field Name | Type | chfem Output Binary | Description |
+| Physics Mode | VTKHDF Field Name | Type | chfem Output Binary | Description |
 | :--- | :--- | :--- | :--- | :--- |
 | **All Modes** | `Phase` | Scalar | *(Generated Internally)* | Voxel-based structural phase ID |
 | **Permeability** | `Pressure` | Scalar | `[basename]_pressure_0.bin` | Fluid pressure distribution |
@@ -33,7 +33,7 @@ recomputes those fields directly from the saved voxel model.
 
 ### Core metadata columns
 
-* `Basename`: Prefix shared by `.raw`, `.nf`, `.vti`, and solver log files.
+* `Basename`: Prefix shared by `.raw`, `.nf`, `.vtkhdf`, and solver log files.
 * `Grid_Size`: Grid dimensions stored as `Nx x Ny x Nz`.
 * `Voxel_Size_m`: Physical edge length of one voxel in meters.
 * `BG_Type`: Background morphology recipe.
