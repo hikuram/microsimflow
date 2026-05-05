@@ -163,7 +163,7 @@ def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics
     """
     final_grid = np.where(comp_grid > 0, comp_grid, tpms_grid).astype(np.uint8)
 
-    if physics_mode in ['electrical', 'mechanics'] and shell_count_grid is not None:
+    if physics_mode in ['electrical', 'mechanics', 'permeability'] and shell_count_grid is not None:
         pure_shell_counts = shell_count_grid & 127
         tunnel_mask = (pure_shell_counts >= 2) & (final_grid < filler_start_id)
         final_grid[tunnel_mask] = primary_inter_id
@@ -188,7 +188,7 @@ def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics
     removed_interface = original_interface_mask & (~interface_mask)
 
     # Rebuild grid based on physics mode semantics
-    if physics_mode in ['electrical', 'mechanics']:
+    if physics_mode in ['electrical', 'mechanics', 'permeability']:
         writable_mask = (final_grid < filler_start_id)
         final_grid[removed_interface & writable_mask] = tpms_grid[removed_interface & writable_mask]
         
