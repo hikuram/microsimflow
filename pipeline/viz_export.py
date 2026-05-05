@@ -21,31 +21,10 @@ def save_thumbnail_png(grid, filename):
     plt.imsave(filename, slice_img, cmap=custom_cmap, vmin=vmin, vmax=vmax, origin='upper')
     print(f"Saved clean thumbnail: {filename}")
 
-def export_vtm_wrapper(vti_filepath, vtm_filepath):
-    """
-    Creates a lightweight VTM (MultiBlock) wrapper that references the original VTI file.
-    This safely bypasses ParaView's extent caching issue during volume rendering.
-    """
-    # Calculate relative path from 'pvd/' directory to the original VTI file (../file.vti)
-    rel_vti_path = f"../{os.path.basename(vti_filepath)}"
-    
-    vtm_content = f"""<?xml version="1.0"?>
-<VTKFile type="vtkMultiBlockDataSet" version="1.0" byte_order="LittleEndian">
-  <vtkMultiBlockDataSet>
-    <DataSet index="0" file="{rel_vti_path}"/>
-  </vtkMultiBlockDataSet>
-</VTKFile>
-"""
-    # Ensure the target directory exists
-    os.makedirs(os.path.dirname(vtm_filepath), exist_ok=True)
-    
-    with open(vtm_filepath, 'w', encoding='utf-8') as f:
-        f.write(vtm_content)
-
 def update_pvd_file(pvd_filepath, dataset_records):
     """
-    Creates or updates a ParaView Data (.pvd) file to group VTM wrappers as a time-series.
-    This ensures ParaView correctly handles varying grid extents during deformation.
+    Creates or updates a ParaView Data (.pvd) file to group VTKHDF files as a time-series.
+    With VTKHDF, ParaView natively handles varying grid extents, so the VTM wrapper hack is no longer needed.
     """
     # Ensure the target directory exists
     os.makedirs(os.path.dirname(pvd_filepath), exist_ok=True)
@@ -56,10 +35,9 @@ def update_pvd_file(pvd_filepath, dataset_records):
         f.write('  <Collection>\n')
         
         for timestep, filepath in dataset_records:
-            # Extract basename for the 'file' attribute.
-            # Since both PVD and VTM are in the 'pvd/' directory, only the filename is needed.
-            rel_filename = os.path.basename(filepath)
-            f.write(f'    <DataSet timestep="{timestep}" group="" part="0" file="{rel_filename}"/>\n')
+            rel_vtkhdf_path = f"../{os.path.basename(filepath)}"
+            
+            f.write(f'    <DataSet timestep="{timestep}" group="" part="0" file="{rel_vtkhdf_path}"/>\n')
             
         f.write('  </Collection>\n')
         f.write('</VTKFile>\n')
