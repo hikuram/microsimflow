@@ -24,7 +24,6 @@ def save_thumbnail_png(grid, filename):
 def update_pvd_file(pvd_filepath, dataset_records):
     """
     Creates or updates a ParaView Data (.pvd) file to group VTKHDF files as a time-series.
-    With VTKHDF, ParaView natively handles varying grid extents, so the VTM wrapper hack is no longer needed.
     """
     # Ensure the target directory exists
     os.makedirs(os.path.dirname(pvd_filepath), exist_ok=True)
