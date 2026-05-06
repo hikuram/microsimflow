@@ -494,11 +494,12 @@ def main():
         if args.vti_fields == "on" and args.solver in ["chfem", "both"]:
             print(f"  -> Scanning for physical field outputs to embed in VTI...")
 
-            # Define base filenames and number of components (without direction suffix _X.bin)
+            # Define base filenames and the corresponding chfem binary suffixes and components.
+            # Note: chfem outputs "temperature" and "flux" binaries for both thermal and electrical analyses.
             field_mappings = {
                 'permeability': {'Pressure': ("pressure", 1), 'Velocity': ("velocity", 3)},
-                'thermal': {'Temperature': ("temperature", 1), 'Heat_Flux': ("heat_flux", 3)},
-                'electrical': {'Potential': ("potential", 1), 'Electric_Current': ("electric_current", 3)},
+                'thermal': {'Temperature': ("temperature", 1), 'Heat_Flux': ("flux", 3)},
+                'electrical': {'Potential': ("temperature", 1), 'Electric_Current': ("flux", 3)},
                 'mechanics': {'Displacement': ("displacement", 3), 'Stress': ("stress", 6)}
             }
 
@@ -514,6 +515,8 @@ def main():
                         if os.path.exists(file_path):
                             found_any = True
                             dir_label = dir_labels[dir_idx]
+                            
+                            # Append macro-direction to the field name (e.g., Potential_X, Electric_Current_Y)
                             field_name = f"{base_field_name}_{dir_label}"
                             
                             try:
