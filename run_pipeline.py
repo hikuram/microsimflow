@@ -494,51 +494,55 @@ def main():
         if args.vti_fields == "on" and args.solver in ["chfem", "both"]:
             print(f"  -> Scanning for physical field outputs to embed in VTI...")
 
-            # Mapping of physics modes to their respective chfem output files and components
+            # Define base filenames and number of components (without direction suffix _X.bin)
             field_mappings = {
-                'permeability': {
-                    'Pressure': (f"{current_basename}_pressure_0.bin", 1),
-                    'Velocity': (f"{current_basename}_velocity_0.bin", 3)
-                },
-                'thermal': {
-                    'Temperature': (f"{current_basename}_temperature_0.bin", 1),
-                    'Heat_Flux': (f"{current_basename}_heat_flux_0.bin", 3)
-                },
-                'electrical': {
-                    'Potential': (f"{current_basename}_potential_0.bin", 1),
-                    'Electric_Current': (f"{current_basename}_electric_current_0.bin", 3)
-                },
-                'mechanics': {
-                    'Displacement': (f"{current_basename}_displacement_0.bin", 3),
-                    'Stress': (f"{current_basename}_stress_0.bin", 6)
-                }
+                'permeability': {'Pressure': ("pressure", 1), 'Velocity': ("velocity", 3)},
+                'thermal': {'Temperature': ("temperature", 1), 'Heat_Flux': ("heat_flux", 3)},
+                'electrical': {'Potential': ("potential", 1), 'Electric_Current': ("electric_current", 3)},
+                'mechanics': {'Displacement': ("displacement", 3), 'Stress': ("stress", 6)}
             }
 
             if args.physics_mode in field_mappings:
                 found_any = False
-                nz, ny, nx = final_grid.shape  # NumPy base shape is (Z, Y, X)
+                nz, ny, nx = final_grid.shape
                 
-                for field_name, (file_path, comps) in field_mappings[args.physics_mode].items():
-                    if os.path.exists(file_path):
-                        found_any = True
-                        try:
-                            # Load binary data (chfem uses float64 by default)
-                            raw_data = np.fromfile(file_path, dtype=np.float64)
+                dir_labels = ['X', 'Y', 'Z', 'YZ', 'ZX', 'XY']
+                
+                for base_field_name, (file_suffix, comps) in field_mappings[args.physics_mode].items():
+                    for dir_idx in range(6):
+                        file_path = f"{current_basename}_{file_suffix}_{dir_idx}.bin"
+                        if os.path.exists(file_path):
+                            found_any = True
+                            dir_label = dir_labels[dir_idx]
+                            field_name = f"{base_field_name}_{dir_label}"
                             
-                            # CRITICAL FIX: chfem outputs data in (Z, X, Y) order. 
-                            # We must reshape to (Z, X, Y) and then transpose to match NumPy's (Z, Y, X).
-                            if comps == 1:
-                                field_data = raw_data.reshape((nz, nx, ny)).transpose(0, 2, 1)
-                            else:
-                                # For vectors/tensors, keep components at the last axis
-                                field_data = raw_data.reshape((nz, nx, ny, comps)).transpose(0, 2, 1, 3)
-                            
-                            extra_viz_fields[field_name] = field_data
-                            print(f"    - Imported field: {field_name} from {file_path}")
-                        except Exception as e:
-                            print(f"    - Failed to import field {field_name}: {e}")
-                    else:
-                        print(f"    - [Not Found] {file_path}")
+                            try:
+                                raw_data = np.fromfile(file_path, dtype=np.float64)
+                                
+                                # As per chfem/io.py, data is exported in (Z, X, Y, comps) order.
+                                # Restore spatial axes to NumPy's (Z, Y, X) without altering component order.
+                                if comps == 1:
+                                    field_data = raw_data.reshape((nz, nx, ny)).transpose(0, 2, 1)
+                                    extra_viz_fields[field_name] = field_data
+                                else:
+                                    field_data = raw_data.reshape((nz, nx, ny, comps)).transpose(0, 2, 1, 3)
+                                    
+                                    # === Forcefully split all vectors and tensors into independent scalars ===
+                                    if comps == 3:
+                                        # Workaround: ParaView's Volume Rendering often ignores Y/Z vector channel selections.
+                                        vec_labels = ['x', 'y', 'z']
+                                        for i, vlabel in enumerate(vec_labels):
+                                            extra_viz_fields[f"{field_name}_{vlabel}"] = field_data[..., i]
+                                            
+                                    elif comps == 6:
+                                        # Workaround: ParaView's Volume Mapper crashes on arrays with >4 components.
+                                        stress_labels = ['xx', 'yy', 'zz', 'yz', 'zx', 'xy']
+                                        for i, slabel in enumerate(stress_labels):
+                                            extra_viz_fields[f"{field_name}_{slabel}"] = field_data[..., i]
+                                            
+                                print(f"    - Imported field: {field_name} from {file_path}")
+                            except Exception as e:
+                                print(f"    - Failed to import field {field_name}: {e}")
                 
                 if not found_any:
                     print("    ! Warning: No binary output files were found.")
