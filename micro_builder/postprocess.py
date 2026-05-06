@@ -1,3 +1,4 @@
+import h5py
 import numpy as np
 from scipy.ndimage import binary_dilation, convolve, distance_transform_edt, generate_binary_structure
 from numba import njit
@@ -326,48 +327,64 @@ def compute_structure_metrics(final_grid, primary_inter_id=3, secondary_inter_id
 
 def export_visualization_vtkhdf(final_grid, filename="microstructure.vtkhdf", voxel_size=1e-8, metadata=None, extra_fields=None):
     """
-    Export the 3D grid to VTKHDF format optimized for ParaView visualization.
-    Embeds physical dimensions and metric metadata into Field Data for HUD overlay.
+    Export the 3D grid natively to VTKHDF format using h5py.
+    This bypasses VTK's vtkHDFWriter limitations for ImageData (as of VTK 9.6).
+    Embeds physical dimensions and metric metadata into FieldData for HUD overlay.
     extra_fields: dict { "Field_Name": numpy_array } for additional physics fields.
     """
-    import pyvista as pv
-    import numpy as np
-
-    grid = pv.ImageData()
-    
-    # Map NumPy ordering (Z, Y, X) to PyVista spatial ordering (X, Y, Z)
     nz, ny, nx = final_grid.shape
-    grid.dimensions = (nx + 1, ny + 1, nz + 1)
     
-    # Assign physical scale
-    grid.spacing = (voxel_size, voxel_size, voxel_size)
-    grid.origin = (0.0, 0.0, 0.0)
-    
-    # Store phase ID in cell_data
-    grid.cell_data["Phase"] = final_grid.flatten(order="C")
-    
-    # --- Embed additional physical fields (pressure, velocity, etc.) ---
-    if extra_fields:
-        for field_name, field_data in extra_fields.items():
-            field_data_f32 = field_data.astype(np.float32)
-            # Check if scalar (matches grid size)
-            if field_data_f32.ndim == 3 and field_data_f32.size == final_grid.size:
-                grid.cell_data[field_name] = field_data_f32.flatten(order="C")
-            # Check if vector or tensor (matches grid size * components)
-            elif field_data_f32.ndim == 4 and field_data_f32.shape[:3] == final_grid.shape:
-                comp = field_data_f32.shape[-1]
-                # PyVista expects (-1, comp) shape for multi-component cell_data
-                grid.cell_data[field_name] = field_data_f32.reshape(-1, comp, order="C")
-            else:
-                print(f"Warning: Field '{field_name}' shape {field_data.shape} mismatch. Skipping.")
+    with h5py.File(filename, 'w') as f:
+        # --- 1. VTKHDF Root Attributes ---
+        # Define the required base attributes for ParaView to recognize the format
+        vtkhdf = f.create_group("VTKHDF")
+        vtkhdf.attrs.create("Version", [1, 0], dtype=np.int64)
+        vtkhdf.attrs.create("Type", np.string_("ImageData"))
+        
+        # --- 2. Grid Definition ---
+        # Define the spatial extent (Point indices: 0 to nx, 0 to ny, 0 to nz)
+        vtkhdf.create_dataset("WholeExtent", data=np.array([0, nx, 0, ny, 0, nz], dtype=np.int32))
+        vtkhdf.create_dataset("Origin", data=np.array([0.0, 0.0, 0.0], dtype=np.float64))
+        vtkhdf.create_dataset("Spacing", data=np.array([voxel_size, voxel_size, voxel_size], dtype=np.float64))
+        vtkhdf.create_dataset("Direction", data=np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], dtype=np.float64))
+        
+        # --- 3. CellData (Voxel Arrays) ---
+        # Flatten the grid in 'C' order (Z-axis slowest, X-axis fastest) to match VTK memory layout
+        celldata = vtkhdf.create_group("CellData")
+        phase_data = final_grid.flatten(order="C")
+        celldata.create_dataset("Phase", data=phase_data, compression="gzip", compression_opts=4)
+        
+        # Embed additional physical fields (pressure, velocity, stress, etc.)
+        # Downcast to float32 and apply GZIP compression to prevent file size explosion
+        if extra_fields:
+            for field_name, field_data in extra_fields.items():
+                field_data_f32 = field_data.astype(np.float32)
+                
+                # Check if scalar (matches grid size)
+                if field_data_f32.ndim == 3 and field_data_f32.size == final_grid.size:
+                    flat_data = field_data_f32.flatten(order="C")
+                    celldata.create_dataset(field_name, data=flat_data, compression="gzip", compression_opts=4)
+                # Check if vector or tensor (matches grid size * components)
+                elif field_data_f32.ndim == 4 and field_data_f32.shape[:3] == final_grid.shape:
+                    comp = field_data_f32.shape[-1]
+                    flat_data = field_data_f32.reshape(-1, comp, order="C")
+                    celldata.create_dataset(field_name, data=flat_data, compression="gzip", compression_opts=4)
+                else:
+                    print(f"Warning: Field '{field_name}' shape {field_data.shape} mismatch. Skipping.")
 
-    # Embed tracking metadata
-    if metadata:
-        for key, value in metadata.items():
-            grid.field_data[key] = [value]
-            
-    grid.save(filename)
-    return grid
+        # --- 4. FieldData (Metadata) ---
+        # Embed tracking metadata (e.g., Grid_Size, Volume Fractions)
+        # Use variable-length UTF-8 strings to prevent ParaView parsing crashes
+        if metadata:
+            fielddata = vtkhdf.create_group("FieldData")
+            str_dt = h5py.string_dtype(encoding='utf-8')
+            for key, value in metadata.items():
+                if isinstance(value, str):
+                    fielddata.create_dataset(key, data=np.array([value], dtype=object), dtype=str_dt)
+                else:
+                    fielddata.create_dataset(key, data=np.array([value], dtype=np.float64))
+                    
+    return filename
 
 def export_chfem_inputs(final_grid, base_filename="model", voxel_size=1e-8, physics_mode='thermal', prop_map=None):
     """
