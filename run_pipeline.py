@@ -44,7 +44,6 @@ from pipeline.recalc import run_recalculation_mode
 from pipeline.solver_puma import run_puma_elasticity, run_puma_laplace
 from pipeline.viz_export import (
     export_common_legend,
-    export_vtm_wrapper,
     save_thumbnail_png,
     update_pvd_file,
 )
@@ -421,22 +420,20 @@ def main():
         vtkhdf_filename = f"{current_basename}.vtkhdf"
         export_visualization_vtkhdf(final_grid, vtkhdf_filename, voxel_size=args.voxel_size, metadata=metadata)
         
-        # --- Create VTM wrapper and update PVD in the 'vtm/' subdirectory ---
+        # --- Create PVD wrapper and update PVD in the 'pvd/' subdirectory ---
         # Extract the directory path from current_basename
         base_dir = os.path.dirname(current_basename)
         file_stem = os.path.basename(current_basename)
         base_stem = os.path.basename(args.basename)
         
-        # Determine the target vtm directory (one level below the VTKHDF file)
-        wrapper_dir = os.path.join(base_dir, "vtm") if base_dir else "vtm"
-        vtm_filename = os.path.join(wrapper_dir, f"{file_stem}.vtm")
-        export_vtm_wrapper(vtkhdf_filename, vtm_filename)
+        # Determine the target pvd directory (one level below the VTKHDF file)
+        wrapper_dir = os.path.join(base_dir, "pvd") if base_dir else "pvd"
         
         # Use the stretch ratio as the timestep value
         pvd_filename = os.path.join(wrapper_dir, f"{base_stem}.pvd")
-        pvd_records.append((stretch, vtm_filename))
+        pvd_records.append((stretch, vtkhdf_filename))
         update_pvd_file(pvd_filename, pvd_records)
-        print(f"Generated VTM wrapper and updated PVD collection in: {pvd_filename}")
+        print(f"Updated PVD collection in: {pvd_filename}")
 
         slice_filename = f"{current_basename}_slice.png"
         save_thumbnail_png(final_grid, slice_filename)
