@@ -1,3 +1,4 @@
+import pyvista as pv
 import numpy as np
 from scipy.ndimage import binary_dilation, convolve, distance_transform_edt, generate_binary_structure
 from numba import njit
@@ -326,47 +327,42 @@ def compute_structure_metrics(final_grid, primary_inter_id=3, secondary_inter_id
 
 def export_visualization_vti(final_grid, filename="microstructure.vti", voxel_size=1e-8, metadata=None, extra_fields=None):
     """
-    Export the 3D grid to VTI format optimized for ParaView visualization.
-    Embeds physical dimensions and metric metadata into Field Data for HUD overlay.
-    extra_fields: dict { "Field_Name": numpy_array } for additional physics fields.
+    Export the 3D grid natively to VTI format using PyVista.
+    VTI flawlessly supports string metadata in ParaView's FieldData.
+    File size is kept minimal by downcasting extra fields to float32 and applying ZLIB.
     """
-    import pyvista as pv
-    import numpy as np
-
-    grid = pv.ImageData()
-    
-    # Map NumPy ordering (Z, Y, X) to PyVista spatial ordering (X, Y, Z)
     nz, ny, nx = final_grid.shape
-    grid.dimensions = (nx + 1, ny + 1, nz + 1)
     
-    # Assign physical scale
-    grid.spacing = (voxel_size, voxel_size, voxel_size)
-    grid.origin = (0.0, 0.0, 0.0)
+    # PyVista expects dimensions in points, so add 1 to voxel dimensions
+    grid = pv.ImageData(
+        dimensions=(nx + 1, ny + 1, nz + 1),
+        spacing=(voxel_size, voxel_size, voxel_size),
+        origin=(0.0, 0.0, 0.0)
+    )
     
-    # Store phase ID in cell_data
+    # CRITICAL FIX: NumPy's (Z, Y, X) shape flattened in C-order naturally matches 
+    # VTK's expectation where the X-axis varies fastest.
     grid.cell_data["Phase"] = final_grid.flatten(order="C")
     
-    # --- Embed additional physical fields (pressure, velocity, etc.) ---
     if extra_fields:
         for field_name, field_data in extra_fields.items():
-            # Check if scalar (matches grid size)
-            if field_data.ndim == 3 and field_data.size == final_grid.size:
-                grid.cell_data[field_name] = field_data.flatten(order="C")
-            # Check if vector or tensor (matches grid size * components)
-            elif field_data.ndim == 4 and field_data.shape[:3] == final_grid.shape:
-                comp = field_data.shape[-1]
-                # PyVista expects (-1, comp) shape for multi-component cell_data
-                grid.cell_data[field_name] = field_data.reshape(-1, comp, order="C")
-            else:
-                print(f"Warning: Field '{field_name}' shape {field_data.shape} mismatch. Skipping.")
-
-    # Embed tracking metadata
+            # Prevent file size explosion by downcasting to float32
+            field_data_f32 = np.ascontiguousarray(field_data.astype(np.float32))
+            
+            if field_data_f32.ndim == 3:
+                grid.cell_data[field_name] = field_data_f32.flatten(order="C")
+            elif field_data_f32.ndim == 4:
+                comp = field_data_f32.shape[-1]
+                # C-order reshape keeps the vector components grouped together in memory
+                grid.cell_data[field_name] = field_data_f32.reshape(-1, comp, order="C")
+    
     if metadata:
         for key, value in metadata.items():
             grid.field_data[key] = [value]
             
+    # save() in PyVista automatically applies ZLIB compression to .vti
     grid.save(filename)
-    return grid
+    return filename
 
 def export_chfem_inputs(final_grid, base_filename="model", voxel_size=1e-8, physics_mode='thermal', prop_map=None):
     """
