@@ -17,7 +17,7 @@ python3 exp/run_exp7_shape_stretch.py   # Microstructure deformation under mecha
 # Benchmark & Verification Experiments (chfem vs PuMA)
 python3 exp/run_exp8_compare_spheres.py      # Solver comparison for spheres across varying interface profiles
 python3 exp/run_exp9_compare_fibers.py       # Solver comparison for isotropic fibers across interface profiles
-python3 exp/run_exp10_compare_orientation.py # Pseudo-orientation benchmark evaluating solver accuracy under mechanical stretch
+python3 exp/run_exp10_compare_orientation.py # Orientation benchmark evaluating solver accuracy across varying vMF concentration (kappa) levels
 ```
 
 > **Note on Benchmarks (Exp 8-10):** These scripts automatically generate `PASS/FAIL` markdown reports and detailed CSV summaries. They verify the consistency between `chfem` and `PuMA` using configured log10-difference thresholds and anisotropy checks.
