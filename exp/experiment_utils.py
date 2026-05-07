@@ -5,11 +5,9 @@ import re
 import subprocess
 from typing import Dict, List, Optional, Tuple
 
-
 EXP_BASENAME_RE = re.compile(
-    r"(?P<exp>exp\d+?)_(?P<profile>.+?)_vf(?P<vf>\d+\.\d+)_seed(?P<seed>\d+)_L(?P<stretch>\d+\.\d+)$"
+    r"(?P<exp>exp\d+?)_(?P<profile>.+?)_vf(?P<vf>\d+\.\d+)_seed(?P<seed>\d+)(?:_L(?P<stretch>\d+\.\d+))?(?:_K(?P<kappa>-?\d+(?:\.\d+)?))?$"
 )
-
 
 def get_next_result_dir(base_name: str) -> str:
     idx = 1
@@ -111,13 +109,15 @@ def parse_experiment_basename(basename: str) -> Dict[str, object]:
             "vf": None,
             "seed": None,
             "stretch_ratio_parsed": None,
+            "kappa_parsed": None,
         }
     return {
         "exp_id": match.group("exp"),
         "interface_profile": match.group("profile"),
         "vf": float(match.group("vf")),
         "seed": int(match.group("seed")),
-        "stretch_ratio_parsed": float(match.group("stretch")),
+        "stretch_ratio_parsed": float(match.group("stretch")) if match.group("stretch") else None,
+        "kappa_parsed": float(match.group("kappa")) if match.group("kappa") else None,
     }
 
 
@@ -210,12 +210,14 @@ def summarize_solver_comparison(
             else:
                 verdict = "CHECK"
 
+        param_val = row.get("Stretch_Ratio") or row.get("stretch_ratio_parsed") or row.get("kappa_parsed")
+
         detail_rows.append({
             "exp_id": row["exp_id"],
             "interface_profile": row["interface_profile"],
             "vf": row["vf"],
             "seed": row["seed"],
-            "stretch_ratio": row.get("Stretch_Ratio") or row["stretch_ratio_parsed"],
+            "stretch_ratio": param_val,
             "Basename": row.get("Basename", ""),
             "Grid_Size": row.get("Grid_Size", ""),
             "Recipe": row.get("Recipe", ""),
