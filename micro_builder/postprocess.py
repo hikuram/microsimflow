@@ -325,15 +325,21 @@ def compute_structure_metrics(final_grid, primary_inter_id=3, secondary_inter_id
         'n_conductive_clusters': int(num_conductive_clusters),
     }
 
-def export_visualization_vti(final_grid, filename="microstructure.vti", voxel_size=1e-8, metadata=None, extra_fields=None):
+def export_visualization_vti(final_grid, filename="microstructure.vti", voxel_size=1e-8, metadata=None, extra_fields=None, writer="vti"):
     """
-    Export the 3D grid natively to VTI format using PyVista.
-    VTI flawlessly supports string metadata in ParaView's FieldData.
-    File size is kept minimal by downcasting extra fields to float32 and applying ZLIB.
+    Export the 3D voxel grid natively to VTI, PyVista ZSTD (.pv), or Apache Arrow formats.
+    Supports string metadata in FieldData and minimizes file size by downcasting extra fields to float32.
+    
+    Args:
+        final_grid: 3D numpy array of the voxel grid (Z, Y, X).
+        filename: Output file path.
+        voxel_size: Physical size of a voxel.
+        metadata: Dictionary of scalar or string metadata.
+        extra_fields: Dictionary of additional physics fields { "Field_Name": numpy_array }.
+        writer: Export format ('vti', 'zstd', 'arrow').
     """
     nz, ny, nx = final_grid.shape
     
-    # PyVista expects dimensions in points, so add 1 to voxel dimensions
     grid = pv.ImageData(
         dimensions=(nx + 1, ny + 1, nz + 1),
         spacing=(voxel_size, voxel_size, voxel_size),
@@ -360,8 +366,33 @@ def export_visualization_vti(final_grid, filename="microstructure.vti", voxel_si
         for key, value in metadata.items():
             grid.field_data[key] = [value]
             
-    # save() in PyVista automatically applies ZLIB compression to .vti
-    grid.save(filename)
+    # --- Dispatch Export by Writer Type ---
+    if writer == "vti":
+        # Native VTK format (ZLIB compressed, full ParaView compatibility)
+        grid.save(filename)
+        
+    elif writer == "zstd":
+        # PyVista 0.48+ pyvista-zstd format (.pv)
+        try:
+            import pyvista_zstd
+        except ImportError:
+            print("  ! Warning: 'pyvista-zstd' is not installed. Saving .pv might fallback or fail. Try: pip install pyvista-zstd")
+        grid.save(filename)
+        
+    elif writer == "arrow":
+        # PyVista 0.48+ Apache Arrow / DataFrame export
+        try:
+            import pyarrow.feather as feather
+            # Export CellData to Arrow format (ImageData geometry is implicit/uniform)
+            if hasattr(grid.cell_data, 'to_arrow'):
+                arrow_table = grid.cell_data.to_arrow()
+                feather.write_feather(arrow_table, filename)
+            else:
+                print("  ! Warning: PyVista 0.48+ to_arrow() API not found. Saving normally.")
+                grid.save(filename)
+        except ImportError:
+            print("  ! Warning: 'pyarrow' is required for Arrow export. Try: pip install pyarrow")
+            
     return filename
 
 def export_chfem_inputs(final_grid, base_filename="model", voxel_size=1e-8, physics_mode='thermal', prop_map=None):
