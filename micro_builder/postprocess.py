@@ -325,6 +325,75 @@ def compute_structure_metrics(final_grid, primary_inter_id=3, secondary_inter_id
         'n_conductive_clusters': int(num_conductive_clusters),
     }
 
+def compute_advanced_metrics(final_grid, voxel_size, filler_start_id=4):
+    """
+    Compute advanced morphological descriptors using PoreSpy.
+    These metrics evaluate the geometric and spatial distribution of the filler network.
+    Includes Specific Surface Area, Local Thickness, and Autocorrelation Length.
+    """
+    try:
+        import porespy as ps
+    except ImportError:
+        print("  ! Warning: 'porespy' is not installed. Advanced metrics will be skipped.")
+        return {}
+
+    # Create a boolean mask of the filler network
+    filler_mask = (final_grid >= filler_start_id)
+    if not np.any(filler_mask):
+        return {
+            'specific_surface_area': 0.0,
+            'local_thickness_mean': 0.0,
+            'autocorrelation_length': 0.0
+        }
+
+    metrics = {}
+
+    # 1. Specific Surface Area
+    # Calculate the surface area of the filler phase per unit total volume
+    try:
+        ssa = ps.metrics.specific_surface_area(filler_mask, voxel_size=voxel_size)
+        metrics['specific_surface_area'] = float(ssa)
+    except Exception as e:
+        print(f"  ! Warning: SSA calculation failed: {e}")
+        metrics['specific_surface_area'] = 0.0
+
+    # 2. Local Thickness
+    try:
+        # Calculates the radius of the largest sphere that fits inside the filler phase
+        thk = ps.filters.local_thickness(filler_mask)
+        thk_vals = thk[filler_mask] # Filter out zeros (non-filler regions)
+        # Multiply by voxel_size to get physical thickness
+        metrics['local_thickness_mean'] = float(np.mean(thk_vals)) * voxel_size if len(thk_vals) > 0 else 0.0
+    except Exception as e:
+        print(f"  ! Warning: Local thickness calculation failed: {e}")
+        metrics['local_thickness_mean'] = 0.0
+
+    # 3. Autocorrelation Length (Correlation Length)
+    try:
+        # two_point_correlation returns probability and distance
+        data = ps.metrics.two_point_correlation(filler_mask)
+        prob = data.probability
+        dist = data.distance
+
+        # The correlation length is defined here as the distance where the correlation
+        # drops to 1/e of its initial value (which is Vf).
+        vf = prob[0]
+        target_prob = vf * np.exp(-1)
+
+        # Find the first index where probability drops below the 1/e target
+        idx = np.argmax(prob < target_prob)
+        if idx == 0: # If it never drops below or array is too short
+            corr_len = dist[-1] * voxel_size
+        else:
+            corr_len = dist[idx] * voxel_size
+            
+        metrics['autocorrelation_length'] = float(corr_len)
+    except Exception as e:
+        print(f"  ! Warning: Autocorrelation length calculation failed: {e}")
+        metrics['autocorrelation_length'] = 0.0
+
+    return metrics
+
 def export_visualization_vti(final_grid, filename="microstructure.vti", voxel_size=1e-8, metadata=None, extra_fields=None, writer="vti"):
     """
     Export the 3D voxel grid natively to VTI, PyVista ZSTD (.pv), or Apache Arrow formats.

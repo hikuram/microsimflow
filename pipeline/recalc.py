@@ -5,7 +5,7 @@ import subprocess
 
 import numpy as np
 
-from micro_builder import compute_structure_metrics, export_chfem_inputs
+from micro_builder import compute_structure_metrics, compute_advanced_metrics, export_chfem_inputs
 from .io_csv import (
     ensure_structure_metric_columns,
     parse_chfem_log,
@@ -108,6 +108,11 @@ def run_recalculation_mode(args):
             }
         else:
             structure_metrics = compute_structure_metrics(final_grid)
+            
+            if getattr(args, 'advanced_metrics', False):
+                adv_metrics = compute_advanced_metrics(final_grid, voxel_size, filler_start_id=4)
+                structure_metrics.update(adv_metrics)
+                
         metric_fields = structure_metrics_to_csv_fields(structure_metrics)
 
         # 5. Execute solvers and collect results (Task 4: Universal T-notation)

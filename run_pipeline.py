@@ -31,8 +31,10 @@ from micro_builder import (
     export_visualization_vti,
     summarize_phase_fractions,
     compute_structure_metrics,
+    compute_advanced_metrics,
     apply_background_deformation,
     render_deformed_fillers
+)
 )
 from pipeline.io_csv import (
     ensure_structure_metric_columns,
@@ -116,6 +118,7 @@ Example: --recipe "rigidfiber:0.05:length=60:radius=2:prop=500.0" "flake:0.02:ra
                         help="Maximum per-placement ledger correction ratio in fine deformation mode (default: 0.01).")
     parser.add_argument("--overwrite_props", action="store_true", help="Overwrite .nf properties with command-line arguments during recalculation.")
     parser.add_argument("--skip_structure_metrics", action="store_true", help="Skip lightweight post-process structure metrics (enabled by default).")
+    parser.add_argument("--advanced_metrics", action="store_true", help="Calculate advanced PoreSpy metrics (SSA, Local Thickness, Autocorrelation).")
     return parser.parse_args()
 
 def main():
@@ -397,6 +400,12 @@ def main():
                 secondary_inter_id=secondary_inter_id,
                 filler_start_id=filler_start_id
             )
+            
+            # --- Evaluate advanced PoreSpy metrics if requested ---
+            if args.advanced_metrics:
+                adv_metrics = compute_advanced_metrics(final_grid, args.voxel_size, filler_start_id=filler_start_id)
+                structure_metrics.update(adv_metrics)
+                
         metric_fields = structure_metrics_to_csv_fields(structure_metrics)
 
         metadata = {
@@ -584,7 +593,7 @@ def main():
         with open(args.csv_log, mode='a', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             if not file_exists:
-                # Header with universal T-notation
+                # Header with universal T-notation and advanced metrics
                 writer.writerow([
                     "Basename", "Grid_Size", "Voxel_Size_m", "BG_Type", "Mode", "Solver", "Recipe", 
                     "Stretch_Ratio", "Poisson_Ratio",
@@ -592,6 +601,7 @@ def main():
                     "Contact_Ratio", "Tunneling_Ratio", "Connectivity_Ratio",
                     "N_Contact_Voxels", "N_Tunnel_Voxels", "N_Filler_Voxels", "N_Conductive_Candidate_Voxels",
                     "N_Largest_Cluster_Voxels", "N_Conductive_Clusters",
+                    "Specific_Surface_Area", "Local_Thickness_Mean", "Autocorrelation_Length", # <- ADDED
                     "Placement_Logs", "Slice_Image",
                     "chfem_Time_s", "chfem_Txx", "chfem_Tyy", "chfem_Tzz", "chfem_Tyz", "chfem_Tzx", "chfem_Txy",
                     "puma_Time_s", "puma_Txx", "puma_Tyy", "puma_Tzz", "puma_Tyz", "puma_Tzx", "puma_Txy"
@@ -608,6 +618,7 @@ def main():
                 metric_fields["Contact_Ratio"], metric_fields["Tunneling_Ratio"], metric_fields["Connectivity_Ratio"],
                 metric_fields["N_Contact_Voxels"], metric_fields["N_Tunnel_Voxels"], metric_fields["N_Filler_Voxels"],
                 metric_fields["N_Conductive_Candidate_Voxels"], metric_fields["N_Largest_Cluster_Voxels"], metric_fields["N_Conductive_Clusters"],
+                metric_fields.get("Specific_Surface_Area", ""), metric_fields.get("Local_Thickness_Mean", ""), metric_fields.get("Autocorrelation_Length", ""), # <- ADDED
                 " | ".join(current_step_logs),
                 slice_filename,
                 chfem_time, *chfem_results,

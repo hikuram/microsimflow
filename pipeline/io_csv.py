@@ -62,27 +62,45 @@ def parse_nf_properties(nf_path):
                 
     return prop_map
 
-
 STRUCTURE_METRIC_COLUMNS = [
     "Contact_Ratio", "Tunneling_Ratio", "Connectivity_Ratio",
     "N_Contact_Voxels", "N_Tunnel_Voxels", "N_Filler_Voxels",
-    "N_Conductive_Candidate_Voxels", "N_Largest_Cluster_Voxels", "N_Conductive_Clusters"
+    "N_Conductive_Candidate_Voxels", "N_Largest_Cluster_Voxels", "N_Conductive_Clusters",
+    "Specific_Surface_Area", "Local_Thickness_Mean", "Autocorrelation_Length"
 ]
-
 
 def structure_metrics_to_csv_fields(metrics):
     """Format structure metrics for stable CSV output."""
-    return {
-        "Contact_Ratio": f"{metrics['contact_ratio']:.4f}",
-        "Tunneling_Ratio": f"{metrics['tunneling_ratio']:.4f}",
-        "Connectivity_Ratio": f"{metrics['connectivity_ratio']:.4f}",
-        "N_Contact_Voxels": str(metrics['n_contact_voxels']),
-        "N_Tunnel_Voxels": str(metrics['n_tunnel_voxels']),
-        "N_Filler_Voxels": str(metrics['n_filler_voxels']),
-        "N_Conductive_Candidate_Voxels": str(metrics['n_conductive_candidate_voxels']),
-        "N_Largest_Cluster_Voxels": str(metrics['n_largest_cluster_voxels']),
-        "N_Conductive_Clusters": str(metrics['n_conductive_clusters']),
+    fields = {
+        # Using .get() for backwards compatibility and safety
+        "Contact_Ratio": f"{metrics.get('contact_ratio', 0.0):.4f}",
+        "Tunneling_Ratio": f"{metrics.get('tunneling_ratio', 0.0):.4f}",
+        "Connectivity_Ratio": f"{metrics.get('connectivity_ratio', 0.0):.4f}",
+        "N_Contact_Voxels": str(metrics.get('n_contact_voxels', 0)),
+        "N_Tunnel_Voxels": str(metrics.get('n_tunnel_voxels', 0)),
+        "N_Filler_Voxels": str(metrics.get('n_filler_voxels', 0)),
+        "N_Conductive_Candidate_Voxels": str(metrics.get('n_conductive_candidate_voxels', 0)),
+        "N_Largest_Cluster_Voxels": str(metrics.get('n_largest_cluster_voxels', 0)),
+        "N_Conductive_Clusters": str(metrics.get('n_conductive_clusters', 0)),
     }
+    
+    # Optional advanced metrics formatting
+    if 'specific_surface_area' in metrics:
+        fields["Specific_Surface_Area"] = f"{metrics['specific_surface_area']:.4e}"
+    else:
+        fields["Specific_Surface_Area"] = ""
+        
+    if 'local_thickness_mean' in metrics:
+        fields["Local_Thickness_Mean"] = f"{metrics['local_thickness_mean']:.4e}"
+    else:
+        fields["Local_Thickness_Mean"] = ""
+        
+    if 'autocorrelation_length' in metrics:
+        fields["Autocorrelation_Length"] = f"{metrics['autocorrelation_length']:.4e}"
+    else:
+        fields["Autocorrelation_Length"] = ""
+        
+    return fields
 
 
 def ensure_structure_metric_columns(header, rows):
