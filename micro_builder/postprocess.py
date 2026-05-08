@@ -333,6 +333,7 @@ def compute_advanced_metrics(final_grid, voxel_size, filler_start_id=4):
     """
     try:
         import porespy as ps
+        from scipy.ndimage import label
     except ImportError:
         print("  ! Warning: 'porespy' is not installed. Advanced metrics will be skipped.")
         return {}
@@ -342,20 +343,34 @@ def compute_advanced_metrics(final_grid, voxel_size, filler_start_id=4):
     if not np.any(filler_mask):
         return {
             'specific_surface_area': 0.0,
+            'mean_sphericity': 0.0,
             'local_thickness_mean': 0.0,
             'autocorrelation_length': 0.0
         }
 
     metrics = {}
 
-    # 1. Specific Surface Area
-    # Calculate the surface area of the filler phase per unit total volume
+# 1. Specific Surface Area & Sphericity via regionprops_3D
     try:
-        ssa = ps.metrics.specific_surface_area(filler_mask, voxel_size=voxel_size)
-        metrics['specific_surface_area'] = float(ssa)
+        # Label the continuous filler networks
+        labeled_filler, _ = label(filler_mask)
+        # Extract 3D region properties
+        props = ps.metrics.regionprops_3D(labeled_filler)
+        
+        # Calculate physical surface area and volume
+        areas = np.array([p.surface_area for p in props]) * (voxel_size ** 2)
+        vols = np.array([p.volume for p in props]) * (voxel_size ** 3)
+        sphericities = np.array([p.sphericity for p in props])
+        
+        total_area = np.sum(areas)
+        total_vol = np.sum(vols)
+        
+        metrics['specific_surface_area'] = float(total_area / total_vol) if total_vol > 0 else 0.0
+        metrics['mean_sphericity'] = float(np.mean(sphericities)) if len(sphericities) > 0 else 0.0
     except Exception as e:
-        print(f"  ! Warning: SSA calculation failed: {e}")
+        print(f"  ! Warning: regionprops_3D calculation failed: {e}")
         metrics['specific_surface_area'] = 0.0
+        metrics['mean_sphericity'] = 0.0
 
     # 2. Local Thickness
     try:

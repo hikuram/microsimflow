@@ -601,7 +601,7 @@ def main():
                     "Contact_Ratio", "Tunneling_Ratio", "Connectivity_Ratio",
                     "N_Contact_Voxels", "N_Tunnel_Voxels", "N_Filler_Voxels", "N_Conductive_Candidate_Voxels",
                     "N_Largest_Cluster_Voxels", "N_Conductive_Clusters",
-                    "Specific_Surface_Area", "Local_Thickness_Mean", "Autocorrelation_Length", # <- ADDED
+                    "Specific_Surface_Area", "Mean_Sphericity", "Local_Thickness_Mean", "Autocorrelation_Length",
                     "Placement_Logs", "Slice_Image",
                     "chfem_Time_s", "chfem_Txx", "chfem_Tyy", "chfem_Tzz", "chfem_Tyz", "chfem_Tzx", "chfem_Txy",
                     "puma_Time_s", "puma_Txx", "puma_Tyy", "puma_Tzz", "puma_Tyz", "puma_Tzx", "puma_Txy"
@@ -618,7 +618,7 @@ def main():
                 metric_fields["Contact_Ratio"], metric_fields["Tunneling_Ratio"], metric_fields["Connectivity_Ratio"],
                 metric_fields["N_Contact_Voxels"], metric_fields["N_Tunnel_Voxels"], metric_fields["N_Filler_Voxels"],
                 metric_fields["N_Conductive_Candidate_Voxels"], metric_fields["N_Largest_Cluster_Voxels"], metric_fields["N_Conductive_Clusters"],
-                metric_fields.get("Specific_Surface_Area", ""), metric_fields.get("Local_Thickness_Mean", ""), metric_fields.get("Autocorrelation_Length", ""), # <- ADDED
+                metric_fields.get("Specific_Surface_Area", ""), metric_fields.get("Mean_Sphericity", ""), metric_fields.get("Local_Thickness_Mean", ""), metric_fields.get("Autocorrelation_Length", ""),
                 " | ".join(current_step_logs),
                 slice_filename,
                 chfem_time, *chfem_results,
