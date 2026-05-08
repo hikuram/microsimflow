@@ -83,8 +83,8 @@ Example: --recipe "rigidfiber:0.05:length=60:radius=2:prop=500.0" "flake:0.02:ra
     parser.add_argument("--csv_log", type=str, default="comparison_results.csv", help="CSV file to append/update results (default: 'comparison_results.csv').")
     parser.add_argument("--writer", type=str, default="vti", choices=["vti", "zstd", "arrow"],
                         help="Export format for the final microstructure (vti, zstd, arrow). Default: vti.")
-    parser.add_argument("--vti_fields", type=str, default="on", choices=["on", "off"],
-                        help="Embed additional physical fields (pressure, velocity, etc.) into VTI (default: on).")
+    parser.add_argument("--vti_fields", type=str, default="off", choices=["on", "off"],
+                        help="Embed additional physical fields (pressure, velocity, etc.) into VTI (default: off).")
     parser.add_argument("--physics_mode", type=str, default="thermal",
                         choices=["thermal", "electrical", "mechanics", "permeability"],
                         help="Physics mode which defines interface handling and default properties (default: thermal).")
