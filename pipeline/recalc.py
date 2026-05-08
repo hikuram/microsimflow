@@ -13,6 +13,7 @@ from .io_csv import (
     structure_metrics_to_csv_fields,
 )
 from .solver_puma import run_puma_elasticity, run_puma_laplace
+from .solver_taufactor import run_taufactor
 
 def run_recalculation_mode(args):
     """Executes the recalculation pipeline using existing .raw and .nf files"""
@@ -96,9 +97,20 @@ def run_recalculation_mode(args):
                     elif uid >= 4:
                         prop_map[uid] = fallback_props[4]
 
-            # Re-export .nf for chfem with corrected properties
-            export_chfem_inputs(final_grid, basename, voxel_size, mode, prop_map)
+        # --- Binarization for permeability mode (required for taufactor and solvers) ---
+        if mode == 'permeability':
+            print(f"  -> Binarizing grid for permeability mode (Void phases: {args.void_phases})")
+            export_grid = np.zeros_like(final_grid)
+            for vp in args.void_phases:
+                export_grid[final_grid == vp] = 1
+            export_prop_map = {0: "0.0", 1: "1.0"} 
+        else:
+            export_grid = final_grid
+            export_prop_map = prop_map
 
+        # Re-export .nf for chfem with corrected properties
+        export_chfem_inputs(export_grid, basename, voxel_size, mode, export_prop_map)
+        
         # 4. Compute lightweight structure metrics directly from final_grid
         if args.skip_structure_metrics:
             structure_metrics = {
@@ -107,10 +119,17 @@ def run_recalculation_mode(args):
                 'n_conductive_candidate_voxels': 0, 'n_largest_cluster_voxels': 0, 'n_conductive_clusters': 0,
             }
         else:
-            structure_metrics = compute_structure_metrics(final_grid)
-        metric_fields = structure_metrics_to_csv_fields(structure_metrics)
+            structure_metrics = compute_structure_metrics(export_grid)
+            
+        # Taufactor metrics
+        if args.skip_taufactor:
+            tau_metrics = {}
+        else:
+            tau_metrics = run_taufactor(export_grid, export_prop_map)
+            
+        metric_fields = structure_metrics_to_csv_fields(structure_metrics, tau_metrics)
 
-        # 5. Execute solvers and collect results (Task 4: Universal T-notation)
+        # 5. Execute solvers and collect results
         comp_suffixes = ["xx", "yy", "zz", "yz", "zx", "xy"]
 
         if args.solver in ["chfem", "both"]:
@@ -130,7 +149,7 @@ def run_recalculation_mode(args):
                     
         if args.solver in ["puma", "both"]:
             if mode == 'mechanics':
-                puma_results, ptime = run_puma_elasticity(final_grid, voxel_size, prop_map)
+                puma_results, ptime = run_puma_elasticity(export_grid, voxel_size, export_prop_map)
                 if puma_results[0] is not None:
                     try:
                         if "puma_Time_s" in header:
@@ -142,8 +161,8 @@ def run_recalculation_mode(args):
                     except ValueError:
                         pass
             else:
-                cond_map = {k: float(v.split()[0]) for k, v in prop_map.items()}
-                pkx, pky, pkz, ptime = run_puma_laplace(final_grid, voxel_size, mode, cond_map)
+                cond_map = {k: float(v.split()[0]) for k, v in export_prop_map.items()}
+                pkx, pky, pkz, ptime = run_puma_laplace(export_grid, voxel_size, mode, cond_map)
                 if pkx is not None:
                     try:
                         if "puma_Time_s" in header:

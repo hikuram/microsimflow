@@ -64,6 +64,16 @@ meant to track conductive-network trends, not to reconstruct the exact RSA place
 * `N_Largest_Cluster_Voxels`: Size of the largest 6-neighbor connected conductive cluster.
 * `N_Conductive_Clusters`: Number of connected components in the conductive mask.
 
+### Taufactor descriptor columns (Structural Tortuosity)
+
+These structural descriptors are calculated using the `taufactor` module and fully account for Periodic Boundary Conditions (PBC). They serve as low-cost, high-throughput structural screening indicators prior to running full homogenization solvers.
+
+* `tau_X`, `tau_Y`, `tau_Z`: Tortuosity factor along each respective axis.
+* `D_eff_X`, `D_eff_Y`, `D_eff_Z`: Effective diffusivity along each respective axis.
+* `tau_Time_s`: Execution time required for the `taufactor` calculation in seconds.
+
+> **Note:** In `permeability` mode, the grid is automatically binarized before calculation: specified `void_phases` are treated as fluid (1) and all other phases as solid (0). In all other modes, the multi-phase conductivity map defined by the `prop_map` is used directly.
+
 ### Solver result columns
 
 * `chfem_Time_s`, `puma_Time_s`: Solver wall time recorded by each backend.

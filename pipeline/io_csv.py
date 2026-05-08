@@ -51,7 +51,7 @@ def parse_nf_properties(nf_path):
             in_props = True
             continue
         elif line.startswith('%') and in_props:
-            in_props = False # Reached another section
+            in_props = False
             
         if in_props:
             parts = line.split()
@@ -66,23 +66,41 @@ def parse_nf_properties(nf_path):
 STRUCTURE_METRIC_COLUMNS = [
     "Contact_Ratio", "Tunneling_Ratio", "Connectivity_Ratio",
     "N_Contact_Voxels", "N_Tunnel_Voxels", "N_Filler_Voxels",
-    "N_Conductive_Candidate_Voxels", "N_Largest_Cluster_Voxels", "N_Conductive_Clusters"
+    "N_Conductive_Candidate_Voxels", "N_Largest_Cluster_Voxels", "N_Conductive_Clusters",
+    "tau_X", "tau_Y", "tau_Z", "D_eff_X", "D_eff_Y", "D_eff_Z", "tau_Time_s"
 ]
 
 
-def structure_metrics_to_csv_fields(metrics):
+def structure_metrics_to_csv_fields(metrics, tau_metrics=None):
     """Format structure metrics for stable CSV output."""
-    return {
-        "Contact_Ratio": f"{metrics['contact_ratio']:.4f}",
-        "Tunneling_Ratio": f"{metrics['tunneling_ratio']:.4f}",
-        "Connectivity_Ratio": f"{metrics['connectivity_ratio']:.4f}",
-        "N_Contact_Voxels": str(metrics['n_contact_voxels']),
-        "N_Tunnel_Voxels": str(metrics['n_tunnel_voxels']),
-        "N_Filler_Voxels": str(metrics['n_filler_voxels']),
-        "N_Conductive_Candidate_Voxels": str(metrics['n_conductive_candidate_voxels']),
-        "N_Largest_Cluster_Voxels": str(metrics['n_largest_cluster_voxels']),
-        "N_Conductive_Clusters": str(metrics['n_conductive_clusters']),
+    if tau_metrics is None:
+        tau_metrics = {}
+        
+    fields = {
+        "Contact_Ratio": f"{metrics.get('contact_ratio', 0):.4f}",
+        "Tunneling_Ratio": f"{metrics.get('tunneling_ratio', 0):.4f}",
+        "Connectivity_Ratio": f"{metrics.get('connectivity_ratio', 0):.4f}",
+        "N_Contact_Voxels": str(metrics.get('n_contact_voxels', 0)),
+        "N_Tunnel_Voxels": str(metrics.get('n_tunnel_voxels', 0)),
+        "N_Filler_Voxels": str(metrics.get('n_filler_voxels', 0)),
+        "N_Conductive_Candidate_Voxels": str(metrics.get('n_conductive_candidate_voxels', 0)),
+        "N_Largest_Cluster_Voxels": str(metrics.get('n_largest_cluster_voxels', 0)),
+        "N_Conductive_Clusters": str(metrics.get('n_conductive_clusters', 0)),
+        "tau_X": str(tau_metrics.get('tau_X', "")),
+        "tau_Y": str(tau_metrics.get('tau_Y', "")),
+        "tau_Z": str(tau_metrics.get('tau_Z', "")),
+        "D_eff_X": str(tau_metrics.get('D_eff_X', "")),
+        "D_eff_Y": str(tau_metrics.get('D_eff_Y', "")),
+        "D_eff_Z": str(tau_metrics.get('D_eff_Z', "")),
+        "tau_Time_s": str(tau_metrics.get('tau_Time_s', ""))
     }
+    
+    # Safely format floats if calculation succeeded
+    for k in ["tau_X", "tau_Y", "tau_Z", "D_eff_X", "D_eff_Y", "D_eff_Z", "tau_Time_s"]:
+        if isinstance(tau_metrics.get(k), float):
+            fields[k] = f"{tau_metrics[k]:.6g}"
+            
+    return fields
 
 
 def ensure_structure_metric_columns(header, rows):

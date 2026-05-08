@@ -42,6 +42,7 @@ from pipeline.io_csv import (
 )
 from pipeline.recalc import run_recalculation_mode
 from pipeline.solver_puma import run_puma_elasticity, run_puma_laplace
+from pipeline.solver_taufactor import run_taufactor
 from pipeline.viz_export import (
     export_common_legend,
     export_vtm_wrapper,
@@ -116,6 +117,7 @@ Example: --recipe "rigidfiber:0.05:length=60:radius=2:prop=500.0" "flake:0.02:ra
                         help="Maximum per-placement ledger correction ratio in fine deformation mode (default: 0.01).")
     parser.add_argument("--overwrite_props", action="store_true", help="Overwrite .nf properties with command-line arguments during recalculation.")
     parser.add_argument("--skip_structure_metrics", action="store_true", help="Skip lightweight post-process structure metrics (enabled by default).")
+    parser.add_argument("--skip_taufactor", action="store_true", help="Skip taufactor tortuosity descriptor calculation.")
     return parser.parse_args()
 
 def main():
@@ -276,7 +278,7 @@ def main():
                 'mean_dir': opts.get('mean_dir', [0.0, 0.0, 1.0]), 'kappa': opts.get('kappa', 0.0)
             }
             place_fillers_hybrid(filler_func=get_rigid_cylinder_mask, kwargs=kwargs, desc="Rigid Fiber", **hybrid_args)
-            
+             
         elif f_type == "irregfiber":
             kwargs = {
                 'length': opts.get('length', 60),
@@ -285,7 +287,7 @@ def main():
             }
             place_fillers_hybrid(filler_func=get_irregular_fiber_mask, kwargs=kwargs, desc="Irregular Fiber", **hybrid_args)
         elif f_type == "adaptfiber":
-            # NOTE: adaptfiber is explicitly excluded from affine deformation support. 
+            # NOTE: adaptfiber is explicitly excluded from affine deformation support.
             # It writes directly to comp_grid and is only evaluated at lambda=1.0.
             place_adaptive_fibers(comp_grid=comp_grid, tpms_grid=tpms_grid, target_vol_frac=f_vol,
                                   length=opts.get('length', 90), radius=opts.get('radius', 2),
@@ -309,7 +311,7 @@ def main():
             }
             desc_str = f"Agglomerate(n={int(opts.get('num_fibers', 5))})"
             place_fillers_hybrid(filler_func=get_agglomerate_mask, kwargs=kwargs, desc=desc_str, **hybrid_args)
-                                 
+                                  
         elif f_type == "staggered":
             kwargs = {
                 'radius': opts.get('radius', 15), 'layer_thickness': opts.get('layer_thickness', 2),
@@ -397,7 +399,25 @@ def main():
                 secondary_inter_id=secondary_inter_id,
                 filler_start_id=filler_start_id
             )
-        metric_fields = structure_metrics_to_csv_fields(structure_metrics)
+
+        # --- Binarization for permeability mode (required for taufactor and solvers) ---
+        if args.physics_mode == 'permeability':
+            print(f"  -> Binarizing grid for permeability mode (Void phases: {args.void_phases})")
+            export_grid = np.zeros_like(final_grid)
+            for vp in args.void_phases:
+                export_grid[final_grid == vp] = 1
+            export_prop_map = {0: "0.0", 1: "1.0"} 
+        else:
+            export_grid = final_grid
+            export_prop_map = prop_map
+
+        # --- Evaluate Taufactor Tortuosity Descriptors ---
+        if not args.skip_taufactor:
+            tau_metrics = run_taufactor(export_grid, export_prop_map)
+        else:
+            tau_metrics = {}
+
+        metric_fields = structure_metrics_to_csv_fields(structure_metrics, tau_metrics)
 
         metadata = {
             "Basename": current_basename,
@@ -415,6 +435,12 @@ def main():
             "Contact_Ratio": metric_fields["Contact_Ratio"],
             "Tunneling_Ratio": metric_fields["Tunneling_Ratio"],
             "Connectivity_Ratio": metric_fields["Connectivity_Ratio"],
+            "tau_X": metric_fields["tau_X"],
+            "tau_Y": metric_fields["tau_Y"],
+            "tau_Z": metric_fields["tau_Z"],
+            "D_eff_X": metric_fields["D_eff_X"],
+            "D_eff_Y": metric_fields["D_eff_Y"],
+            "D_eff_Z": metric_fields["D_eff_Z"],
             "Stretch_Ratio": str(stretch),
             "Poisson_Ratio": str(args.poisson_ratio) if stretch != 1.0 else "N/A",
         }
@@ -455,17 +481,6 @@ def main():
         chfem_results = [""] * 6
         puma_time = ""
         puma_results = [""] * 6
-        
-        # --- Binarization for permeability mode ---
-        if args.physics_mode == 'permeability':
-            print(f"  -> Binarizing grid for permeability mode (Void phases: {args.void_phases})")
-            export_grid = np.zeros_like(final_grid)
-            for vp in args.void_phases:
-                export_grid[final_grid == vp] = 1
-            export_prop_map = {0: "0.0", 1: "1.0"} 
-        else:
-            export_grid = final_grid
-            export_prop_map = prop_map
             
         export_chfem_inputs(export_grid, current_basename, voxel_size=args.voxel_size, physics_mode=args.physics_mode, prop_map=export_prop_map)
         
@@ -517,7 +532,7 @@ def main():
                 nz, ny, nx = final_grid.shape
                 
                 dir_labels = ['X', 'Y', 'Z', 'YZ', 'ZX', 'XY']
-                
+                 
                 for base_field_name, (file_suffix, comps) in field_mappings[args.physics_mode].items():
                     for dir_idx in range(6):
                         file_path = f"{current_basename}_{file_suffix}_{dir_idx}.bin"
@@ -594,7 +609,8 @@ def main():
                     "N_Largest_Cluster_Voxels", "N_Conductive_Clusters",
                     "Placement_Logs", "Slice_Image",
                     "chfem_Time_s", "chfem_Txx", "chfem_Tyy", "chfem_Tzz", "chfem_Tyz", "chfem_Tzx", "chfem_Txy",
-                    "puma_Time_s", "puma_Txx", "puma_Tyy", "puma_Tzz", "puma_Tyz", "puma_Tzx", "puma_Txy"
+                    "puma_Time_s", "puma_Txx", "puma_Tyy", "puma_Tzz", "puma_Tyz", "puma_Tzx", "puma_Txy",
+                    "tau_X", "tau_Y", "tau_Z", "D_eff_X", "D_eff_Y", "D_eff_Z", "tau_Time_s"
                 ])
                 
             writer.writerow([
@@ -611,7 +627,9 @@ def main():
                 " | ".join(current_step_logs),
                 slice_filename,
                 chfem_time, *chfem_results,
-                puma_time, *puma_results
+                puma_time, *puma_results,
+                metric_fields["tau_X"], metric_fields["tau_Y"], metric_fields["tau_Z"],
+                metric_fields["D_eff_X"], metric_fields["D_eff_Y"], metric_fields["D_eff_Z"], metric_fields.get("tau_Time_s", "")
             ])
 
 if __name__ == "__main__":
