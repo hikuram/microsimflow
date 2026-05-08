@@ -35,7 +35,7 @@ from micro_builder import (
     apply_background_deformation,
     render_deformed_fillers
 )
-)
+
 from pipeline.io_csv import (
     ensure_structure_metric_columns,
     parse_chfem_log,

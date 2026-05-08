@@ -325,11 +325,11 @@ def compute_structure_metrics(final_grid, primary_inter_id=3, secondary_inter_id
         'n_conductive_clusters': int(num_conductive_clusters),
     }
 
-def compute_advanced_metrics(final_grid, voxel_size, filler_start_id=4):
+def compute_advanced_metrics(final_grid, voxel_size, filler_start_id=4, pbc_pad=20):
     """
     Compute advanced morphological descriptors using PoreSpy.
-    These metrics evaluate the geometric and spatial distribution of the filler network.
-    Includes Specific Surface Area, Local Thickness, and Autocorrelation Length.
+    Includes console logging and Periodic Boundary Condition (PBC) padding via mode='wrap'
+    to prevent underestimation at grid boundaries.
     """
     try:
         import porespy as ps
@@ -338,7 +338,6 @@ def compute_advanced_metrics(final_grid, voxel_size, filler_start_id=4):
         print("  ! Warning: 'porespy' is not installed. Advanced metrics will be skipped.")
         return {}
 
-    # Create a boolean mask of the filler network
     filler_mask = (final_grid >= filler_start_id)
     if not np.any(filler_mask):
         return {
@@ -349,15 +348,14 @@ def compute_advanced_metrics(final_grid, voxel_size, filler_start_id=4):
         }
 
     metrics = {}
+    print(f"  -> [PoreSpy] Starting advanced metrics extraction...")
 
-# 1. Specific Surface Area & Sphericity via regionprops_3D
+    # --- 1. Specific Surface Area & Sphericity (without PBC padding) ---
+    print(f"    - Computing Surface Area and Sphericity via regionprops_3D...")
     try:
-        # Label the continuous filler networks
         labeled_filler, _ = label(filler_mask)
-        # Extract 3D region properties
         props = ps.metrics.regionprops_3D(labeled_filler)
         
-        # Calculate physical surface area and volume
         areas = np.array([p.surface_area for p in props]) * (voxel_size ** 2)
         vols = np.array([p.volume for p in props]) * (voxel_size ** 3)
         sphericities = np.array([p.sphericity for p in props])
@@ -368,45 +366,49 @@ def compute_advanced_metrics(final_grid, voxel_size, filler_start_id=4):
         metrics['specific_surface_area'] = float(total_area / total_vol) if total_vol > 0 else 0.0
         metrics['mean_sphericity'] = float(np.mean(sphericities)) if len(sphericities) > 0 else 0.0
     except Exception as e:
-        print(f"  ! Warning: regionprops_3D calculation failed: {e}")
+        print(f"    ! Warning: regionprops_3D failed: {e}")
         metrics['specific_surface_area'] = 0.0
         metrics['mean_sphericity'] = 0.0
 
-    # 2. Local Thickness
+    # --- 2. Local Thickness (with PBC padding) ---
+    print(f"    - Computing Local Thickness (Applying PBC wrap padding: {pbc_pad} voxels)...")
     try:
-        # Calculates the radius of the largest sphere that fits inside the filler phase
-        thk = ps.filters.local_thickness(filler_mask)
-        thk_vals = thk[filler_mask] # Filter out zeros (non-filler regions)
-        # Multiply by voxel_size to get physical thickness
+        # Pad the mask using periodic boundary conditions
+        padded_mask = np.pad(filler_mask, pad_width=pbc_pad, mode='wrap')
+        padded_thk = ps.filters.local_thickness(padded_mask)
+        
+        # Crop back to the original size
+        thk = padded_thk[pbc_pad:-pbc_pad, pbc_pad:-pbc_pad, pbc_pad:-pbc_pad]
+        thk_vals = thk[filler_mask]
+        
         metrics['local_thickness_mean'] = float(np.mean(thk_vals)) * voxel_size if len(thk_vals) > 0 else 0.0
     except Exception as e:
-        print(f"  ! Warning: Local thickness calculation failed: {e}")
+        print(f"    ! Warning: Local thickness failed: {e}")
         metrics['local_thickness_mean'] = 0.0
 
-    # 3. Autocorrelation Length (Correlation Length)
+    # --- 3. Autocorrelation Length (with PBC padding) ---
+    print(f"    - Computing Autocorrelation Length...")
     try:
-        # two_point_correlation returns probability and distance
-        data = ps.metrics.two_point_correlation(filler_mask)
+        padded_mask = np.pad(filler_mask, pad_width=pbc_pad, mode='wrap')
+        data = ps.metrics.two_point_correlation(padded_mask)
         prob = data.probability
         dist = data.distance
 
-        # The correlation length is defined here as the distance where the correlation
-        # drops to 1/e of its initial value (which is Vf).
         vf = prob[0]
         target_prob = vf * np.exp(-1)
 
-        # Find the first index where probability drops below the 1/e target
         idx = np.argmax(prob < target_prob)
-        if idx == 0: # If it never drops below or array is too short
+        if idx == 0:
             corr_len = dist[-1] * voxel_size
         else:
             corr_len = dist[idx] * voxel_size
             
         metrics['autocorrelation_length'] = float(corr_len)
     except Exception as e:
-        print(f"  ! Warning: Autocorrelation length calculation failed: {e}")
+        print(f"    ! Warning: Autocorrelation length failed: {e}")
         metrics['autocorrelation_length'] = 0.0
 
+    print(f"  -> [PoreSpy] Extraction complete.")
     return metrics
 
 def export_visualization_vti(final_grid, filename="microstructure.vti", voxel_size=1e-8, metadata=None, extra_fields=None, writer="vti"):
