@@ -15,7 +15,7 @@ def run_taufactor(final_grid, prop_map):
     print("\n--- Running taufactor (PeriodicMultiPhaseSolver) ---")
     t0 = time.time()
     
-    # Parse conductivities from prop_map (takes the first float value, safe for Mechanics "E nu" strings)
+    # Parse conductivities directly from prop_map without any modification or cutoff
     cond = {}
     for k, v in prop_map.items():
         try:
@@ -30,9 +30,8 @@ def run_taufactor(final_grid, prop_map):
 
     metrics = {}
     
-    # taufactor solves along axis 0 by default.
-    # In NumPy (Z, Y, X), Z is axis 0, Y is axis 1, X is axis 2.
-    # np.ascontiguousarray is used to ensure memory safety for PyTorch backend.
+    # taufactor solves along axis 0 by default. 
+    # Swapping axes to compute Z (axis 0), Y (axis 1), and X (axis 2).
     directions = {
         'Z': final_grid,
         'Y': np.ascontiguousarray(np.swapaxes(final_grid, 0, 1)),
@@ -42,12 +41,32 @@ def run_taufactor(final_grid, prop_map):
     for dir_name, img in directions.items():
         print(f"  -> Computing {dir_name}-direction...")
         try:
-            solver = tau.PeriodicMultiPhaseSolver(img, cond=valid_cond, iter_limit=10000)
-            solver.solve(verbose=False)
-            metrics[f'tau_{dir_name}'] = getattr(solver, 'tau', "")
-            metrics[f'D_eff_{dir_name}'] = getattr(solver, 'D_eff', "")
+            # Create solver instance with current latest API (diffusivities arg) 
+            solver = tau.PeriodicMultiPhaseSolver(img, diffusivities=valid_cond)
+            # Run solver with specified iteration limit 
+            solver.solve(iter_limit=10000, verbose=False)
+            
+            # Retrieve results; defaults to empty string if attributes are missing
+            tau_val = getattr(solver, 'tau', "")
+            deff_val = getattr(solver, 'D_eff', "")
+            
+            # Convert NumPy array results to scalars if batch size is 1 
+            t_scalar = tau_val.item() if isinstance(tau_val, np.ndarray) and tau_val.size == 1 else tau_val
+            d_scalar = deff_val.item() if isinstance(deff_val, np.ndarray) and deff_val.size == 1 else deff_val
+            
+            # If no percolating path exists, taufactor may return inf or nan. 
+            # These are converted to empty strings for stable CSV logging.
+            if t_scalar is None or (isinstance(t_scalar, (float, int)) and (np.isinf(t_scalar) or np.isnan(t_scalar))):
+                t_scalar = ""
+            if d_scalar is None or (isinstance(d_scalar, (float, int)) and (np.isinf(d_scalar) or np.isnan(d_scalar))):
+                d_scalar = ""
+                
+            metrics[f'tau_{dir_name}'] = t_scalar
+            metrics[f'D_eff_{dir_name}'] = d_scalar
+            
         except Exception as e:
-            print(f"     ! taufactor error in {dir_name}: {e}")
+            # Fallback to empty string for disconnected or failed paths
+            print(f"     ! taufactor error in {dir_name} (likely no percolating path): {e}")
             metrics[f'tau_{dir_name}'] = ""
             metrics[f'D_eff_{dir_name}'] = ""
 
@@ -56,3 +75,4 @@ def run_taufactor(final_grid, prop_map):
     metrics['tau_Time_s'] = total_time
     
     return metrics
+    
