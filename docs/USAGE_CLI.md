@@ -1,8 +1,8 @@
 # CLI Usage & Custom Pipelines
 
-This document explains how to use `run_pipeline.py` to design custom simulations, define complex filler recipes, and manage recalculations.
+This document explains how to use the Microsimflow pipeline to design custom simulations, import real experimental images, and manage recalculations.
 
-## 1. Running Custom Pipelines
+## 1. Running Custom Pipelines (Digital Generation)
 
 You can easily design and run a custom simulation by passing arguments directly to `run_pipeline.py`. Use `python3 run_pipeline.py --help` to see all available parameters.
 
@@ -63,38 +63,96 @@ python3 run_pipeline.py \
   --basename irregfiber_bean --csv_log results.csv
 ```
 
-## 2. Recalculation Mode
+---
 
-You can re-run the computational solvers (chfem, PuMA) on already generated microstructures without undergoing the computationally expensive geometry generation phase. This is highly useful for testing different material properties, running a different solver, or recovering from previous solver errors.
+## 2. Real Image Import & Analysis
 
-The same pass also recomputes the CSV structure descriptors (`Contact_Ratio`, `Tunneling_Ratio`, `Connectivity_Ratio`, and related voxel counts) from the reconstructed `final_grid` loaded from each `.raw` file.
+Microsimflow provides a decoupled workflow to ingest real experimental data (e.g., CT, FIB-SEM scans) and evaluate them using the exact same structure metrics and solvers as the digital twins. This is split into two independent steps to allow for trial-and-error during image thresholding.
 
-To use this mode, provide the `--recalc` flag. The script will read the specified `--csv_log`, locate the corresponding `.raw` and `.nf` files in the directory, re-run the solvers, and update the CSV in place.
+### Step 2.1: Pre-processing & Interface Extraction (`import_image.py`)
+
+This standalone utility converts raw 3D images into the unified 4-phase MicroSimFlow format (`.raw` and `.nf`), explicitly extracting Primary (Contact) and Secondary (Tunneling) interfaces.
+
+```bash
+python3 utils/import_image.py \
+  --input data/experimental_ct.tif \
+  --format tiff \
+  --voxel_size 5e-7 \
+  --threshold 128 \
+  --pattern dilation \
+  --tunnel_radius 2 \
+  --enforce_pbc \
+  --out_dir imported_models/
+
+```
+
+**Key Arguments:**
+
+* `--pattern`: Determines how interfaces are mapped.
+* `erosion`: Minimizes contact core to represent high contact resistance without destroying the conduction network.
+* `dilation` (default): Expands contact zones to heal voxelization defects.
+
+
+* `--enforce_pbc`: Crucial for accurate FEM homogenization. Applies a 3D mirror reflection (increasing volume 8x) to enforce perfect Periodic Boundary Conditions, preventing artificial resistance walls at the bounding box edges.
+
+### Step 2.2: Execution & Solver Analysis (`run_imported.py`)
+
+Once the image is successfully converted into a `.raw` model, feed it into the analysis pipeline. This script reuses the core logic to guarantee 1:1 comparable metrics with the RSA-generated models.
+
+```bash
+python3 run_imported.py \
+  --import_path imported_models/experimental_ct_pbc_final \
+  --solver both \
+  --physics_mode thermal \
+  --advanced_metrics \
+  --csv_log experimental_results.csv
+
+```
+
+*(Note: Exclude the `.raw` or `.nf` extension when providing `--import_path`)*
+
+---
+
+## 3. Recalculation Mode
+
+You can re-run the computational solvers (chfem, PuMA) or extract new structural descriptors on already generated microstructures (both RSA-generated and imported real images) without rebuilding the geometry. This is highly useful for testing different material properties or recovering from previous solver errors.
+
+To use this mode, use the standalone `run_recalc.py` script. It will read the specified `--csv_log`, locate the corresponding `.raw` and `.nf` files, re-run the solvers, and update the CSV in place.
 
 > **Note:** A backup of your CSV (`[your_csv_name].csv.backup`) is automatically created before any recalculation begins.
 
 **Basic Recalculation:**
 
 ```bash
-# Re-run both solvers using the existing properties found in the .nf files
-python3 run_pipeline.py --recalc --csv_log comparison_results.csv --solver both
+# Re-run both solvers and update basic metrics using the existing properties
+python3 run_recalc.py --csv_log comparison_results.csv --solver both
+
 ```
 
-**Recalculation with Property Overwrite:**
-If you want to test new physical properties (e.g., thermal conductivity) on the exact same geometries, use the `--overwrite_props` flag. This forces the script to ignore the old `.nf` properties and apply the new ones provided via the CLI.
+**Recalculation with Advanced Metrics and Property Overwrite:**
+If you want to test new physical properties (e.g., thermal conductivity) on the exact same geometries and extract heavy morphological descriptors (PoreSpy), use the `--overwrite_props` and `--advanced_metrics` flags.
 
 ```bash
-# Overwrite specific properties and re-run only the PuMA solver
-python3 run_pipeline.py --recalc --csv_log comparison_results.csv --overwrite_props --prop_A "0.5" --prop_inter "50.0" --solver puma
+# Overwrite specific properties, extract PoreSpy metrics, and re-run only the PuMA solver
+python3 run_recalc.py \
+  --csv_log comparison_results.csv \
+  --overwrite_props \
+  --prop_A "0.5" \
+  --prop_inter "50.0" \
+  --advanced_metrics \
+  --solver puma
+
 ```
 
 **Key Arguments for Recalculation:**
 
-* `--recalc`: Activates recalculation mode. *(Note: This is mutually exclusive with `--recipe`. You cannot build new models and recalculate old ones in the same command).*
-* `--overwrite_props`: Overwrites the material properties in the existing `.nf` files with the new ones provided via CLI arguments.
+* `--overwrite_props`: Overwrites the material properties in the existing `.nf` files with the new ones provided via CLI arguments (`--prop_A`, etc.).
+* `--advanced_metrics`: Triggers PoreSpy morphological calculations (Specific Surface Area, Local Thickness, Autocorrelation Length).
 * `--csv_log`: The target CSV file containing the list of models to process.
 
-## 3. Rendering a Review Dashboard
+---
+
+## 4. Rendering a Review Dashboard
 
 For quick result review, you can render a self-contained HTML dashboard from a CSV log. The dashboard uses fixed styling, inline data bars, and client-side column sorting implemented with embedded JavaScript. No browser automation or external CDN assets are required.
 
@@ -104,6 +162,7 @@ python3 render_results_dashboard.py \
   --output comparison_results_dashboard.html \
   --sort-by Connectivity_Ratio \
   --descending
+
 ```
 
 **What the dashboard provides:**
