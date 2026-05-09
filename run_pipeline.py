@@ -42,7 +42,6 @@ from pipeline.io_csv import (
     structure_metrics_to_csv_fields,
     upgrade_existing_csv_log,
 )
-from pipeline.recalc import run_recalculation_mode
 from pipeline.solver_puma import run_puma_elasticity, run_puma_laplace
 from pipeline.viz_export import (
     export_common_legend,
@@ -79,8 +78,6 @@ Optional param: 'prop=X' to override the physical property for this specific fil
 Example: --recipe "rigidfiber:0.05:length=60:radius=2:prop=500.0" "flake:0.02:radius=15:thickness=2"
 """
     group.add_argument("--recipe", nargs='+', help=recipe_help)
-    group.add_argument("--recalc", action="store_true", help="Launch in recalculation mode (skip model generation, use existing .raw/.nf files).")
-    
     parser.add_argument("--basename", type=str, default="model", help="Base filename for generated files (default: 'model').")
     parser.add_argument("--csv_log", type=str, default="comparison_results.csv", help="CSV file to append/update results (default: 'comparison_results.csv').")
     parser.add_argument("--writer", type=str, default="vti", choices=["vti", "zstd", "arrow"],
@@ -116,18 +113,12 @@ Example: --recipe "rigidfiber:0.05:length=60:radius=2:prop=500.0" "flake:0.02:ra
                         help="Maximum two-axis tilt correction in degrees for fine deformation mode (default: 0.10).")
     parser.add_argument("--fine_ledger_cap", type=float, default=0.01,
                         help="Maximum per-placement ledger correction ratio in fine deformation mode (default: 0.01).")
-    parser.add_argument("--overwrite_props", action="store_true", help="Overwrite .nf properties with command-line arguments during recalculation.")
     parser.add_argument("--skip_structure_metrics", action="store_true", help="Skip lightweight post-process structure metrics (enabled by default).")
     parser.add_argument("--advanced_metrics", action="store_true", help="Calculate advanced PoreSpy metrics (SSA, Local Thickness, Autocorrelation).")
     return parser.parse_args()
 
 def main():
     args = parse_args()
-    
-    # --- Recalculation Mode Branch ---
-    if getattr(args, 'recalc', False):
-        run_recalculation_mode(args)
-        return  # Exit here if in recalculation mode
     
     # --- Fix the generator if a seed is specified ---
     if args.seed is not None:
