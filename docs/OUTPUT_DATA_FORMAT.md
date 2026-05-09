@@ -64,6 +64,15 @@ meant to track conductive-network trends, not to reconstruct the exact RSA place
 * `N_Largest_Cluster_Voxels`: Size of the largest 6-neighbor connected conductive cluster.
 * `N_Conductive_Clusters`: Number of connected components in the conductive mask.
 
+### Advanced morphology columns (PoreSpy)
+
+These metrics evaluate the precise geometric and spatial distribution of the filler network. Because they rely on intensive 3D morphological operations (via `PoreSpy` and `scipy.ndimage`), they are only computed if the `--advanced_metrics` flag is passed.
+
+* `Specific_Surface_Area`: Total surface area of the filler phase per unit total volume. Influences Kapitza (interfacial) thermal resistance.
+* `Mean_Sphericity`: Average sphericity of the individual filler particles or clusters. Useful for tracking agglomeration or particle deformation.
+* `Local_Thickness_Mean`: Average physical thickness of the filler network, calculated via the maximum inscribed sphere method. Computed with Periodic Boundary Condition (PBC) padding to prevent boundary underestimation.
+* `Autocorrelation_Length`: The characteristic distance (in meters) at which the two-point correlation function drops to $1/e$ of the initial volume fraction. Represents the spatial clustering scale of the fillers.
+
 ### Solver result columns
 
 * `chfem_Time_s`, `puma_Time_s`: Solver wall time recorded by each backend.
