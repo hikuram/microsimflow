@@ -12,7 +12,7 @@ import numpy as np
 import os
 import json
 from scipy.ndimage import (
-    distance_transform_edt, maximum_filter, minimum_filter, generate_binary_structure
+    distance_transform_edt, maximum_filter, minimum_filter
 )
 
 try:
@@ -51,7 +51,7 @@ def apply_pbc_reflection(binary_grid):
     grid_z = np.concatenate([grid_y, np.flip(grid_y, axis=0)], axis=0)
     return grid_z
 
-def extract_interfaces(binary_grid, pattern, tunnel_radius=2, tunnel_radius_thin=1, 
+def extract_interfaces(binary_grid, pattern, tunnel_radius=2, 
                        debug_dir=None, base_name="", snow_sigma=0.4, snow_r_max=4):
     """
     Partition filler network and extract Contact (ID:3) and Tunneling (ID:2) phases.
@@ -59,12 +59,9 @@ def extract_interfaces(binary_grid, pattern, tunnel_radius=2, tunnel_radius_thin
     """
     print(f"  -> Extracting interfaces using purely analytical distance fields...")
     
-    # --- [Safety Constraint] Auto-correction to prevent mid-gap disconnection ---
-    min_safe_thin = int(np.ceil(tunnel_radius / 2.0))
-    if tunnel_radius_thin < min_safe_thin:
-        print(f"     [Warning] tunnel_radius_thin ({tunnel_radius_thin}) risks mid-gap disconnection.")
-        print(f"               Auto-adjusting to mathematically safe minimum: {min_safe_thin}")
-        tunnel_radius_thin = min_safe_thin
+    # Automatically define dual radii from the single tunnel_radius parameter
+    r_thick = tunnel_radius
+    r_thin = max(1, int(np.ceil(tunnel_radius / 2.0)))
 
     final_grid = np.zeros_like(binary_grid, dtype=np.uint8)
     
@@ -83,7 +80,7 @@ def extract_interfaces(binary_grid, pattern, tunnel_radius=2, tunnel_radius_thin
     # 2. Extract Primary Contacts (Internal & 1-voxel gaps)
     print("     Calculating Primary (Contact) interfaces...")
     # Use 26-neighborhood (3x3 cube) for direct contact detection
-    struct_26n = generate_binary_structure(3, 3)
+    struct_26n = get_spherical_footprint(1)
     
     max_c = maximum_filter(regions, footprint=struct_26n)
     min_c = minimum_filter(regions_no_bg, footprint=struct_26n)
@@ -97,11 +94,11 @@ def extract_interfaces(binary_grid, pattern, tunnel_radius=2, tunnel_radius_thin
         save_debug_slice(gap_contact_mask, os.path.join(debug_dir, f"{base_name}_step2b_gap_contacts.png"), cmap='gray')
     
     # 3. Extract Secondary Tunneling (Dual-Radii Logic)
-    print(f"     Calculating Tunneling interfaces using Dual-Radii (thick={tunnel_radius}, thin={tunnel_radius_thin})...")
+    print(f"     Calculating Tunneling interfaces using Dual-Radii (thick={r_thick}, thin={r_thin})...")
     dist_to_filler = distance_transform_edt(~binary_grid)
     
-    ball_thick = get_spherical_footprint(tunnel_radius)
-    ball_thin = get_spherical_footprint(tunnel_radius_thin)
+    ball_thick = get_spherical_footprint(r_thick)
+    ball_thin = get_spherical_footprint(r_thin)
     
     max_thick = maximum_filter(regions, footprint=ball_thick)
     min_thick = minimum_filter(regions_no_bg, footprint=ball_thick)
@@ -157,7 +154,6 @@ def main():
     parser.add_argument("--threshold", type=float, default=128, help="Binarization threshold (Matrix < Threshold <= Filler)")
     parser.add_argument("--pattern", type=str, choices=['erosion', 'dilation'], default='dilation', help="Interface generation algorithm")
     parser.add_argument("--tunnel_radius", type=int, default=2, help="Radius for secondary tunneling interface in voxels")
-    parser.add_argument("--tunnel_radius_thin", type=int, default=1, help="Thin radius for Dual-Radii logic. Limits the bulkiness of tunneling bridges.")
     parser.add_argument("--enforce_pbc", action="store_true", help="Apply 3D mirror reflection to enforce PBC")
     
     # Anti-over-segmentation knobs
@@ -201,7 +197,6 @@ def main():
         binary_grid, 
         pattern=args.pattern, 
         tunnel_radius=args.tunnel_radius, 
-        tunnel_radius_thin=args.tunnel_radius_thin, 
         debug_dir=debug_dir, 
         base_name=base_name, 
         snow_sigma=args.snow_sigma, 
@@ -223,7 +218,6 @@ def main():
         "pbc_enforced": args.enforce_pbc,
         "interface_pattern": args.pattern, 
         "tunnel_radius": args.tunnel_radius,
-        "tunnel_radius_thin": args.tunnel_radius_thin,
         "snow_sigma": args.snow_sigma, 
         "snow_r_max": args.snow_r_max
     }
