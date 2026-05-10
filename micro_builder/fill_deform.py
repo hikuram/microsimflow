@@ -7,7 +7,38 @@ from scipy.ndimage import affine_transform, binary_dilation, generate_binary_str
 from tqdm.auto import tqdm
 
 from . import builder
+
+def get_spherical_brush(radius):
+    """
+    Generate an exact spherical footprint.
+    Replaces scipy's generate_binary_structure to prevent connectivity rank errors.
+    """
+    size = int(radius * 2 + 1)
+    z, y, x = np.ogrid[-radius:radius+1, -radius:radius+1, -radius:radius+1]
+    return z**2 + y**2 + x**2 <= radius**2
+
+def _add_shell_safely(shell_grid, z, y, x, add_thick=0, add_thin=0):
+    """
+    Safely increment the Thick/Thin counters within the lower 7 bits
+    without altering the highest bit (128) used for primary contact flags.
+    """
+    if len(z) == 0:
+        return
+        
+    vals = shell_grid[z, y, x]
+    flags = vals & 128
+    counts = vals & 127
     
+    n_thick = counts % 16
+    n_thin = counts // 16
+    
+    # Prevent overflow: max 15 for thick (4 bits), max 7 for thin (3 bits)
+    n_thick = np.minimum(n_thick + add_thick, 15)
+    n_thin = np.minimum(n_thin + add_thin, 7)
+    
+    # Recombine the flags and new counts
+    shell_grid[z, y, x] = flags | (n_thin * 16 + n_thick).astype(np.uint8)
+
 def crop_mask_to_bbox(mask):
     """Trim the margins of the mask and crop it with a bounding box"""
     coords = np.argwhere(mask > 0)
@@ -960,17 +991,22 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
                 else:
                     stamp_vals = raw_stamp[coords[:, 0], coords[:, 1], coords[:, 2]].astype(np.uint8)
 
-                # Extract shell for ALL modes if shell_count_grid is provided
+                # Extract dual-radii shells for ALL modes if shell_count_grid is provided [cite: 856, 857]
                 if shell_count_grid is not None:
-                    rz, ry, rx = np.ogrid[-tunnel_radius:tunnel_radius+1, 
-                                          -tunnel_radius:tunnel_radius+1, 
-                                          -tunnel_radius:tunnel_radius+1]
-                    shell_brush = rx**2 + ry**2 + rz**2 <= tunnel_radius**2
-                    dilated = binary_dilation(raw_stamp > 0, structure=shell_brush)
-                    shell_coords = np.argwhere(dilated)
-                    shell_offsets = shell_coords - center
+                    # Automatically define dual radii from the single tunnel_radius parameter
+                    r_thick = tunnel_radius
+                    r_thin = max(1, int(np.ceil(tunnel_radius / 2.0)))
+                    
+                    brush_thick = get_spherical_brush(r_thick)
+                    dilated_thick = binary_dilation(raw_stamp > 0, structure=brush_thick)
+                    shell_thick_offsets = np.argwhere(dilated_thick) - center
+
+                    brush_thin = get_spherical_brush(r_thin)
+                    dilated_thin = binary_dilation(raw_stamp > 0, structure=brush_thin)
+                    shell_thin_offsets = np.argwhere(dilated_thin) - center
                 else:
-                    shell_offsets = None
+                    shell_thick_offsets = None
+                    shell_thin_offsets = None
 
                 filler_voxels = len(coords)
                 current_protrusion_limit = calculate_protrusion_limit(filler_voxels, total_voxels, protrusion_coef)
@@ -1022,25 +1058,19 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
                 consecutive_fails += 1
                 continue
 
-            # Handle overlap tracking for Thermal mode and shell counting for all modes
-            if shell_count_grid is not None:
-                # Identify where the newly placed stamp overlaps with existing fillers
-                stz_body = (stamp_offsets[:, 0] + cz) % shape[0]
-                sty_body = (stamp_offsets[:, 1] + cy) % shape[1]
-                stx_body = (stamp_offsets[:, 2] + cx) % shape[2]
-                
-                # Find voxels that were already occupied before this placement
-                contact_mask = (comp_grid[stz_body, sty_body, stx_body] >= 2)
-                
-                # Set the overlap flag (highest bit: 128)
-                shell_count_grid[stz_body[contact_mask], sty_body[contact_mask], stx_body[contact_mask]] |= 128
+            # Increment Thick shell counter
+                if shell_thick_offsets is not None:
+                    stz = (shell_thick_offsets[:, 0] + cz) % shape[0]
+                    sty = (shell_thick_offsets[:, 1] + cy) % shape[1]
+                    stx = (shell_thick_offsets[:, 2] + cx) % shape[2]
+                    _add_shell_safely(shell_count_grid, stz, sty, stx, add_thick=1)
 
-                if shell_offsets is not None:
-                    stz = (shell_offsets[:, 0] + cz) % shape[0]
-                    sty = (shell_offsets[:, 1] + cy) % shape[1]
-                    stx = (shell_offsets[:, 2] + cx) % shape[2]
-                    # Increment shell count (lower 7 bits are safe to add to)
-                    shell_count_grid[stz, sty, stx] += 1
+                # Increment Thin shell counter
+                if shell_thin_offsets is not None:
+                    stz_th = (shell_thin_offsets[:, 0] + cz) % shape[0]
+                    sty_th = (shell_thin_offsets[:, 1] + cy) % shape[1]
+                    stx_th = (shell_thin_offsets[:, 2] + cx) % shape[2]
+                    _add_shell_safely(shell_count_grid, stz_th, sty_th, stx_th, add_thin=1)
             
             # Update progress
             current_total = np.sum(comp_grid >= 2)
@@ -1052,10 +1082,12 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
                 # Store the original stamp for coarse deformation mode.
                 raw_offsets = stamp_offsets.astype(np.int16, copy=True)
                 raw_vals = stamp_vals.astype(np.uint8, copy=True)
-                if shell_offsets is None:
-                    raw_shell_offsets = None
+                if shell_thick_offsets is None:
+                    raw_shell_thick_offsets = None
+                    raw_shell_thin_offsets = None
                 else:
-                    raw_shell_offsets = shell_offsets.astype(np.int16, copy=True)
+                    raw_shell_thick_offsets = shell_thick_offsets.astype(np.int16, copy=True)
+                    raw_shell_thin_offsets = shell_thin_offsets.astype(np.int16, copy=True)
 
                 placement_registry.append({
                     'geom': current_geom_data,
@@ -1063,11 +1095,12 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
                     'filler_id': filler_id,
                     'raw_offsets': raw_offsets,
                     'raw_vals': raw_vals,
-                    'raw_shell_offsets': raw_shell_offsets,
+                    'raw_shell_offsets': raw_shell_thick_offsets,
+                    'raw_shell_thin_offsets': raw_shell_thin_offsets,
                     'raw_voxel_count': int(len(raw_offsets)),
                     'added_voxel_count': int(added_voxels)
                 })
-
+                
             # Reset cache and fails only on success (Keep cache if it's a sphere)
             if current_geom_data.get('base_type') != 'sphere':
                 stamp_offsets = None 
@@ -1154,19 +1187,33 @@ def _paste_mask_to_grid(comp_grid, shell_count_grid, cz, cy, cx, mask, filler_id
     # Protect existing VF
     comp_grid[gz[~contact], gy[~contact], gx[~contact]] = filler_id
 
-    # Compute shell for all modes unconditionally
+    # Compute dual-radii shell for all modes unconditionally
     if shell_count_grid is not None:
-        struct = generate_binary_structure(3, 1)
-        dilated_mask = binary_dilation(mask, structure=struct, iterations=tunnel_radius)
-        shell_coords = np.argwhere(dilated_mask)
-        sh_offsets = shell_coords - center
-        sz = (sh_offsets[:, 0] + cz) % shape[0]
-        sy = (sh_offsets[:, 1] + cy) % shape[1]
-        sx = (sh_offsets[:, 2] + cx) % shape[2]
-        shell_count_grid[sz, sy, sx] += 1
+        r_thick = tunnel_radius
+        r_thin = max(1, int(np.ceil(tunnel_radius / 2.0)))
+        
+        # Thick shell
+        brush_thick = get_spherical_brush(r_thick)
+        dilated_thick = binary_dilation(mask, structure=brush_thick)
+        shell_coords_thick = np.argwhere(dilated_thick)
+        sh_offsets_thick = shell_coords_thick - center
+        sz = (sh_offsets_thick[:, 0] + cz) % shape[0]
+        sy = (sh_offsets_thick[:, 1] + cy) % shape[1]
+        sx = (sh_offsets_thick[:, 2] + cx) % shape[2]
+        _add_shell_safely(shell_count_grid, sz, sy, sx, add_thick=1)
+
+        # Thin shell
+        brush_thin = get_spherical_brush(r_thin)
+        dilated_thin = binary_dilation(mask, structure=brush_thin)
+        shell_coords_thin = np.argwhere(dilated_thin)
+        sh_offsets_thin = shell_coords_thin - center
+        sz_th = (sh_offsets_thin[:, 0] + cz) % shape[0]
+        sy_th = (sh_offsets_thin[:, 1] + cy) % shape[1]
+        sx_th = (sh_offsets_thin[:, 2] + cx) % shape[2]
+        _add_shell_safely(shell_count_grid, sz_th, sy_th, sx_th, add_thin=1)
 
 def _paste_offsets_to_grid(comp_grid, shell_count_grid, cz, cy, cx, offsets, vals,
-                           filler_id, tunnel_radius, shell_offsets=None):
+                           filler_id, tunnel_radius, shell_offsets=None, shell_thin_offsets=None):
     """Paste stored voxel offsets into the grid without re-voxelizing the filler."""
     shape = comp_grid.shape
     if offsets is None or len(offsets) == 0:
@@ -1192,13 +1239,21 @@ def _paste_offsets_to_grid(comp_grid, shell_count_grid, cz, cy, cx, offsets, val
     comp_grid[gz[~contact], gy[~contact], gx[~contact]] = paste_vals[~contact]
 
     # Compute shell for all modes unconditionally
-    if shell_count_grid is not None and shell_offsets is not None:
-        shell_offsets = np.asarray(shell_offsets)
-        sz = (shell_offsets[:, 0] + cz) % shape[0]
-        sy = (shell_offsets[:, 1] + cy) % shape[1]
-        sx = (shell_offsets[:, 2] + cx) % shape[2]
-        shell_count_grid[sz, sy, sx] += 1
-
+    if shell_count_grid is not None:
+        if shell_offsets is not None:
+            shell_offsets = np.asarray(shell_offsets)
+            sz = (shell_offsets[:, 0] + cz) % shape[0]
+            sy = (shell_offsets[:, 1] + cy) % shape[1]
+            sx = (shell_offsets[:, 2] + cx) % shape[2]
+            _add_shell_safely(shell_count_grid, sz, sy, sx, add_thick=1)
+            
+        if shell_thin_offsets is not None:
+            shell_thin_offsets = np.asarray(shell_thin_offsets)
+            sz_th = (shell_thin_offsets[:, 0] + cz) % shape[0]
+            sy_th = (shell_thin_offsets[:, 1] + cy) % shape[1]
+            sx_th = (shell_thin_offsets[:, 2] + cx) % shape[2]
+            _add_shell_safely(shell_count_grid, sz_th, sy_th, sx_th, add_thin=1)
+            
     return written
 
 
@@ -1512,7 +1567,6 @@ def _render_and_paste_kinematics(comp_grid, shell_count_grid, P_CM_new, F_mat, g
     _paste_mask_to_grid(comp_grid, shell_count_grid, new_cz, new_cy, new_cx, cropped, item['filler_id'], tunnel_radius)
     return before
 
-
 def _render_coarse_item(comp_grid, shell_count_grid, P_CM_new, geom, item, tunnel_radius):
     """Render one item in coarse mode using the saved raw stamp offsets."""
     raw_offsets = item.get('raw_offsets')
@@ -1521,12 +1575,13 @@ def _render_coarse_item(comp_grid, shell_count_grid, P_CM_new, geom, item, tunne
 
     offset = np.array(geom.get('offset_center_to_cm', [0, 0, 0]))
     new_cz, new_cy, new_cx = _candidate_center_from_offset(P_CM_new, offset, comp_grid.shape)
+    
     return _paste_offsets_to_grid(
         comp_grid, shell_count_grid, new_cz, new_cy, new_cx,
         raw_offsets, item.get('raw_vals'), item['filler_id'], tunnel_radius,
-        shell_offsets=item.get('raw_shell_offsets')
+        shell_offsets=item.get('raw_shell_offsets'),
+        shell_thin_offsets=item.get('raw_shell_thin_offsets')
     )
-
 
 def _render_fine_item(comp_grid, shell_count_grid, P_CM_new, F_mat, geom, item,
                       tunnel_radius, volume_error_ledger, fine_volume_tol,
