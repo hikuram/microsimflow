@@ -244,8 +244,8 @@ def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics
                 valid_primary_mask = overlap_mask & (distance_grid <= max_contact_thickness)
                 final_grid[valid_primary_mask] = primary_inter_id
 
-            # 2. Secondary Interface (Kapitza Bridge / Tunneling) [cite: 964]
-            # Shell counts are stored in the lower 7 bits. [cite: 965]
+            # 2. Secondary Interface (Kapitza Bridge / Tunneling)
+            # Shell counts are stored in the lower 7 bits.
             pure_shell_counts = shell_count_grid & 127
             
             # Decode counters from bit partitions
