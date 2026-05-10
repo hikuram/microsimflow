@@ -244,11 +244,18 @@ def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics
                 valid_primary_mask = overlap_mask & (distance_grid <= max_contact_thickness)
                 final_grid[valid_primary_mask] = primary_inter_id
 
-            # 2. Secondary Interface (Kapitza Bridge / Tunneling)
-            # Shell counts are stored in the lower 7 bits.
+            # 2. Secondary Interface (Kapitza Bridge / Tunneling) [cite: 964]
+            # Shell counts are stored in the lower 7 bits. [cite: 965]
             pure_shell_counts = shell_count_grid & 127
             
-            raw_kapitza_mask = (final_grid < 2) & (pure_shell_counts >= 2)
+            # Decode counters from bit partitions
+            n_thick = pure_shell_counts % 16
+            n_thin = pure_shell_counts // 16
+            
+            # Dual-Radii logic: Must touch the Thin zone of at least one filler
+            # and overlap the Thick zones of at least two fillers.
+            raw_kapitza_mask = (final_grid < 2) & (n_thin >= 1) & (n_thick >= 2)
+            
             cleaned_kapitza_mask = raw_kapitza_mask.copy()
             cleaned_kapitza_mask = _remove_spikes_6n(cleaned_kapitza_mask, min_neighbors=spike_min_neighbors)
             cleaned_kapitza_mask = _cleanup_small_components(cleaned_kapitza_mask, min_component_size=min_interface_component_size)
