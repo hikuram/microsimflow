@@ -31,16 +31,23 @@ Instead of drawing fillers directly into the massive global grid, the algorithm 
 
 To prevent combinatorial explosion and computational bottlenecks during high-volume fraction packing, the placement loop utilizes advanced memory and caching optimizations.
 
-| **Step** | **Process** | **Implementation & Optimization Strategy** |
-| :--- | :--- | :--- |
-| **1** | **Pre-extract Shells** | The dilation required to calculate tunneling zones (`tunnel_radius`) is performed exactly once on the small, local stamp *before* placement, extracting the shell coordinates as relative offsets. |
-| **2** | **Geometry Caching** | If a placement attempt fails (e.g., due to a collision), the generated stamp mask and shell offsets are not discarded. They are cached and reused for up to 50 attempts, drastically reducing the cost of building complex shapes like flakes or agglomerates. |
-| **3** | **Smart Sampling** | Before the loop begins, the algorithm lists all valid coordinates within the Polymer A phase. Random starting points (`cz, cy, cx`) are selected strictly from this list, eliminating wasted collision checks in invalid background phases. |
-| **4** | **Protrusion & Overlap Check** | Utilizing **Numba JIT compilation**, the core collision engine (`_check_and_place_fast`) operates purely on C-level array indexing. It instantly evaluates boundary protrusion and filler overlaps without ever performing expensive matrix copies or Python slicing. |
-| **5** | **Voxel Writing** | Upon clearing the checks, the algorithm writes the filler ID and shell data directly to the global `comp_grid` and `shell_count_grid`. |
-| **6** | **Placement Registry** | Upon success, it is not just voxels that are saved. The exact kinematics (`geom_data`) and target coordinates are logged in the `placement_registry`. Subsequent processes (like mechanical stretching) read this registry to redraw the geometry, ensuring perfect rigid-body mechanics. |
+| Step | Process | Implementation & Optimization Strategy |
+| --- | --- | --- |
+| **1** | **Pre-extract Dual Shells** | Both **Thick** ($R_{thick}$) and **Thin** ($R_{thin}$) shells are pre-calculated for the local stamp. $R_{thin}$ is automatically defined as $\lceil tunnel\_radius / 2 \rceil$ to ensure mid-gap connectivity. |
+| **2** | **Geometry Caching** | Stamps and dual-shell offsets are cached and reused for up to 50 attempts to reduce CPU overhead. |
+| **3** | **Smart Sampling** | Starting points are strictly sampled from valid Polymer A coordinates. |
+| **4** | **Protrusion & Overlap Check** | <br>**Numba JIT** collision engine (`_check_and_place_fast`) evaluates boundaries and overlaps using C-level array indexing. |
+| **5** | **Voxel Writing & Flagging** | Writes IDs and updates bitwise counters in the global `comp_grid` and `shell_count_grid`. |
+| **6** | **Placement Registry** | Logs kinematics and coordinates for downstream affine deformation (mechanical stretching). |
 
-* **Soft-Core Fallback (Overlap Tolerance):** To guarantee that the target Volume Fraction (VF) is achieved even in highly dense regimes, the algorithm tracks placement failures. If `consecutive_fails` exceeds 500, it automatically switches to a "Soft-Core" mode, allowing fillers to intersect while still strictly preventing protrusion beyond the permitted limits.
+#### Soft-Core Fallback (Hybrid Placement)
+
+To achieve ultra-high volume fractions (VF) beyond the theoretical jamming limit of standard RSA, the algorithm employs a dynamic fallback mechanism:
+
+* **Hard-Core Mode (Default):** Fillers are placed with strict non-overlapping rules using the ultra-fast Numba JIT engine.
+* **Soft-Core Transition:** If the algorithm fails to find a valid placement after 500 consecutive attempts (`consecutive_fails > 500`), it automatically transitions to Soft-Core mode (`overlap_mode = True`).
+* **Best-of-N Overlap Minimization:** In Soft-Core mode, the algorithm samples multiple candidate locations (Best-of-N) and selects the one that causes the *least* amount of physical overlap. The overlapping voxels are rigorously tracked using **Bit 7 (Value 128)** in the `shell_count_grid` for downstream interface healing.
+
 
 -----
 
@@ -57,29 +64,35 @@ To maintain strict physical integrity across solvers, voxels are mapped to speci
 
 Instead of overwriting, the algorithm utilizes bitwise operations on an unsigned 8-bit integer array (`shell_count_grid`) to invisibly track overlaps and shell proximity. The physical meaning of these bits is interpreted later during the interface generation phase.
 
-### Phase 1: Unified Placement Tracking (All Modes)
+### Phase 1: Bitwise Placement Tracking (All Modes)
 
-  * **Direct Overlap Flag:** If a newly placed filler overlaps an existing one, the highest bit is set (`|= 128`).
-  * **Shell Proximity Count:** The expanded shell around the filler increments the lower 7 bits (`+= 1`).
+Instead of a simple counter, `shell_count_grid` (uint8) uses bit-partitioning to track proximity and physical overlaps simultaneously without extra memory: 
+
+* **Bit 7 (Value 128):** **Physical Overlap Flag**. Set when fillers intersect in Soft-Core mode. 
+* **Bits 4-6:** **Thin Shell Counter** ($n_{thin}$). Tracks proximity to filler surfaces within $R_{thin}$. 
+* **Bits 0-3:** **Thick Shell Counter** ($n_{thick}$). Tracks proximity within $R_{thick}$ (user-defined `tunnel_radius`). 
 
 ### Phase 2: Physics-Specific Resolution
 
-Once all fillers are placed, the bitwise data is decoded to construct physical interfaces tailored to the selected solver mode.
+Once placement is complete, the bitwise data is decoded to construct physical interfaces: 
 
 | **Process** | **Thermal Mode** (Heat Conduction) | **Electrical / Mechanics Mode** (Conductivity / Stiffness) |
-| :--- | :--- | :--- |
-| **Primary Interface (ID: 3)**<br>*(Direct Contact)* | Extracts the `128` bit flag. Applies a Distance Transform to filter out massive bulk overlaps. Only thin contact zones (thickness <= 1.5) are converted to Thermal Contact Resistance (**ID: 3**). Bulk overlaps are protected as filler material. | Extracts the lower 7 bits to find areas where shells overlap (`count >= 2`). Forms a temporary "Unified Interface." |
-| **Secondary Interface (ID: 2)**<br>*(Proximity/Tunneling)* | Extracts the lower 7 bits. In the polymer space, areas with `count >= 2` are identified as Kapitza bridge candidates (**ID: 2**). | (Determined during the separation step below). |
-| **Targeted Cleanup & Separation** | **Isolated Execution:**<br>1. Protects the Primary interface (**ID: 3**).<br>2. Cleans up only the Secondary interface (**ID: 2**) by removing 1-voxel islands and spikes to stabilize the FVM solver. | **Unified Execution & Split:**<br>1. Cleans up the temporary Unified Interface (removes slivers and spikes).<br>2. Dilates the filler bodies by 1 voxel.<br>3. Intersections between the dilation and the Unified Interface become the **Primary Interface (ID: 3)**.<br>4. The remaining untouched Unified Interface becomes the **Secondary Interface (ID: 2)**. |
+| --- | --- | --- |
+| **Primary Interface (ID: 3)**<br><br>*(Direct Contact)* | Extracts **Bit 7**. Applies a Distance Transform (threshold $\le 1.5$) to isolate thin contact resistance zones.  | Defined by **$n_{thin} \ge 2$** (1-voxel gap) OR an **expanded physical overlap** (Bit 7 dilated by `contact_radius`).  |
+| **Secondary Interface (ID: 2)**<br><br>*(Tunneling Bridge)* | Defined by **$n_{thin} \ge 1$ AND $n_{thick} \ge 2$**. This ensures bridges are slim and anchored to filler centers.  | Defined by **$n_{thin} = 1$ AND $n_{thick} \ge 2$**. Captures proximity bridges while excluding those already assigned as Primary.  |
 
-**Robust Interface Cleanup & FVM/FEM Stabilization:**
-After initial interface identification, the algorithm applies a strict 3-stage cleanup pipeline to prevent solver divergence (e.g., zero-volume cells or singular matrices in chfem/PuMA):
-1. **Sliver Fill:** 1-voxel gaps of polymer trapped between fillers and interfaces are forcibly converted to interface material.
-2. **Spike Removal:** A 6-neighborhood convolution removes protruding burrs with fewer than 2 connections.
-3. **Island Cleanup:** Floating, unconnected interface voxels are eliminated.
+### Robust Anchored Cleanup
+
+To stabilize solvers, a 3-stage anchored cleanup is applied. Unlike standard morphological filters, this logic treats **Fillers as anchors** to prevent the erosion of valid 1-voxel bridges: 
+
+1. **Sliver Fill:** 1-voxel polymer gaps trapped between filler and interface are converted to interface. 
+2. **Anchored Spike Removal:** Removes burrs with $< 2$ neighbors, where neighbors include both interface and filler voxels. 
+3. **Anchored Island Cleanup:** Eliminates floating interface voxels not connected to any network. 
+
 
 **Self-Healing Interfaces (Thermal Mode):** 
 If the cleanup pipeline deletes a primary interface voxel, it creates a void in the conduction path. To prevent this, the Thermal mode utilizes a `Majority Filler Vote` (`np.argmax` over 6-neighbors) to intelligently reassign the deleted interface voxel to the most dominant adjacent filler ID.
+
 
 **PBC-Aware Distance Transform:**
 To measure the direct contact thickness in Thermal mode accurately, the algorithm temporarily pads the global grid using `mode='wrap'` before executing the Distance Transform, ensuring flawless interface calculations across Periodic Boundary Conditions (PBC).
@@ -126,24 +139,23 @@ graph TD
     %% ================= Phase 1 =================
     subgraph Ph1 [Phase 1: Geometry & Kinematics]
         direction TB
-        G1[Shape Selection]:::process --> G2["Unified Orientation Control<br/>(vMF / Pseudo-Watson)"]:::process
-        G2 --> G3["Geometry / Skeleton Generation<br/>(Includes Math-only Booleans)"]:::process
-        G3 --> G4["Crop & CM Standardization<br/>(Multi-point Kinematics Tracking)"]:::process
-        G4 --> Cache[(Geometry Cache<br/>& Shell Offsets)]:::data
+        G1[Shape Selection]:::process --> G2["vMF / Pseudo-Watson<br/>Orientation Control"]:::process
+        G2 --> G3["Geometry / Skeleton Generation<br/>(Includes Math Booleans)"]:::process
+        G3 --> G4["Crop & CM Standardization<br/>(Local Kinematics Definition)"]:::process
+        G4 --> Cache[(Geometry Cache<br/>& Dual-Shell Offsets)]:::data
     end
 
     %% ================= Phase 2 =================
     subgraph Ph2 [Phase 2: RSA Core Placement]
         direction TB
-        R1[Sample Valid Coordinate in Matrix]:::process
+        R1[Sample Valid Matrix Coordinate]:::process
         Cache -.-> R1
         R1 --> R2{Numba JIT Fast Check<br/>Overlap & Protrusion}:::decision
         R2 -- "Fails > 500" --> R2a[Switch to Soft-Core<br/>Overlap Allowed]:::highlight
         R2a --> R1
-        R2 -- Collision / Out of bounds --> R1
         R2 -- Success --> R3[Bitwise Write to Grid]:::process
-        R3 --> R4["Track Overlap |= 128<br/>Track Shell += 1"]:::process
-        R4 --> Registry[(Placement Registry)]:::data
+        R3 --> R4["Bit 128: Overlap Flag<br/>Bits 4-6: Thin Counter<br/>Bits 0-3: Thick Counter"]:::highlight
+        R4 --> Registry[(Placement Registry<br/>Kinematics & Coords)]:::data
     end
 
     Ph1 --> R1
@@ -157,35 +169,36 @@ graph TD
         
         D1 -- Yes --> D1a{Deformation Mode}:::decision
         
-        D1a -- Coarse --> DC[Paste Raw Offsets<br/>at Affine CM]:::process
+        D1a -- Coarse --> DC["Paste Raw Offsets<br/>(Fast Translation)"]:::process
         
         D1a -- Fine --> D2[CM Affine Translation]:::process
-        D2 --> D3[Rigid-Body Rotation<br/>via Polar Decomposition]:::process
-        D3 --> D_Tilt["2-Axis Tilt Compensation<br/>(Volume Ledger Check)"]:::highlight
-        D_Tilt --> D4[Dynamic Bounding Box Redraw]:::process
+        D2 --> D3["Rigid-Body Rotation<br/>(Polar Decomposition)"]:::process
+        D3 --> D_Tilt["2-Axis Tilt Compensation<br/>(Volume Ledger Neutralization)"]:::highlight
+        D_Tilt --> D4["Dynamic Bounding Box Redraw<br/>(Re-calculate Dual Shells)"]:::process
     end
 
     %% ================= Phase 4 =================
-    subgraph Ph4 [Phase 4: Physics-Aware Interface Generation]
+    subgraph Ph4 [Phase 4: Dual-Radii Interface Generation]
         direction TB
         I1{Physics Mode?}:::decision
         
-        I1 -- Thermal --> I2["Extract overlap bit (|= 128)"]:::process
-        I2 --> I3["PBC-Aware Distance Transform<br/>(d <= 1.5)"]:::highlight
-        I3 --> I_Clean1["Sliver Fill, Spikes & Tiny Islands Cleanup"]:::process
-        I_Clean1 --> I_Heal["Restore deleted interface via<br/>Majority Filler Vote (np.argmax)"]:::highlight
-        I_Heal --> I4[Assign Primary ID: 3<br/>& Secondary ID: 2]:::process
+        I1 -- Thermal --> I2["Extract overlap Bit 128"]:::process
+        I2 --> I3["PBC-Aware EDT<br/>(Primary: d <= 1.5)"]:::process
+        I3 --> I3a["Secondary:<br/>n_thin >= 1 & n_thick >= 2"]:::highlight
         
-        I1 -- Electrical / Mechanics --> I5["Extract unified shell (>= 2)"]:::process
-        I5 --> I_Clean2["Sliver Fill, Spikes & Tiny Islands Cleanup"]:::process
-        I_Clean2 --> I6[Dilate Filler & Split Intersections]:::process
-        I6 --> I4
+        I1 -- Electrical / Mechanics --> I5["Decode Bitwise Counters"]:::process
+        I5 --> I6["Primary: n_thin >= 2<br/>or Dilated Bit 128"]:::highlight
+        I6 --> I7["Secondary:<br/>n_thin == 1 & n_thick >= 2"]:::highlight
+        
+        I3a --> I_Clean["Anchored Cleanup<br/>(Bridges protected by Fillers)"]:::highlight
+        I7 --> I_Clean
+        I_Clean --> I_Heal["Majority Filler Vote<br/>(Thermal Path Healing)"]:::process
     end
 
     D4 --> I1
     DC --> I1
     D1 -- No --> I1
-    I4 --> Ph5
+    I_Heal --> Ph5
 
     %% ================= Phase 5 =================
     subgraph Ph5 [Phase 5: Structure Analysis]
@@ -193,5 +206,5 @@ graph TD
         A1[PBC-Aware Union-Find]:::process --> A2[Compute Structure Metrics<br/>connectivity, contact, tunneling]:::process
     end
 
-    A2 --> End([Output Final Voxel Grid & Metrics]):::terminal
+    A2 --> End([Output Final Voxel Grid & CSV]):::terminal
 ```
