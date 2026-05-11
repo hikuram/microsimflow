@@ -1052,9 +1052,7 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
                     stamp_offsets, stamp_vals, current_protrusion_limit, 
                     filler_id
                 )
-                if success:
-                    # After confirming success, write using the tracking function
-                    _write_candidate_fast(comp_grid, shell_count_grid, cz, cy, cx, stamp_offsets, stamp_vals)
+                
             else:
                 # --- Softcore Mode: Best-of-N (N=3) approach to minimize overlaps ---
                 best_score = float('inf')
