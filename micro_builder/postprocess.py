@@ -165,8 +165,18 @@ def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics
         pure_shell_counts = shell_count_grid & 127
         n_thick = pure_shell_counts % 16
         n_thin = pure_shell_counts // 16
-        tunnel_mask = (n_thin >= 1) & (n_thick >= 2) & (final_grid < filler_start_id)
-        final_grid[tunnel_mask] = primary_inter_id
+        # Pure Dual-Radii Classification
+        primary_mask = (n_thin >= 2) & (final_grid < filler_start_id)
+        secondary_mask = (n_thin == 1) & (n_thick >= 2) & (final_grid < filler_start_id)
+        
+        overlap_mask = (shell_count_grid & 128) > 0
+        if np.any(overlap_mask):
+            struct_1voxel = generate_binary_structure(3, 1)
+            dilated_overlap = binary_dilation(overlap_mask, structure=struct_1voxel, iterations=contact_radius)
+            primary_mask |= (dilated_overlap & (final_grid < filler_start_id))
+
+        final_grid[secondary_mask] = secondary_inter_id
+        final_grid[primary_mask] = primary_inter_id
 
     filler_mask = (final_grid >= filler_start_id)
 
@@ -194,16 +204,6 @@ def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics
         writable_mask = (final_grid < filler_start_id)
         final_grid[removed_interface & writable_mask] = tpms_grid[removed_interface & writable_mask]
         
-        unified_interface_mask = (final_grid == primary_inter_id)
-        filler_mask = (final_grid >= filler_start_id)
-        
-        if np.any(unified_interface_mask) and np.any(filler_mask):
-            struct_1voxel = generate_binary_structure(3, 1)
-            dilated_filler = binary_dilation(filler_mask, structure=struct_1voxel, iterations=contact_radius)
-            
-            secondary_mask = unified_interface_mask & (~dilated_filler)
-            final_grid[secondary_mask] = secondary_inter_id
-
     elif physics_mode == 'thermal':
         # Revert removed interface voxels to the prevalent adjacent filler ID
         if np.any(removed_interface):
