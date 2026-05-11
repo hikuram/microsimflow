@@ -721,7 +721,7 @@ def apply_brush_and_write(comp_grid, backbone, radius, physics_mode='thermal', s
     contact_mask = (comp_grid[gz, gy, gx] >= 2)
     
     if shell_count_grid is not None:
-        # Set the overlap flag (highest bit: 128)
+        # Use bitwise OR to set the highest bit (128) as the overlap flag in the uint8 array
         shell_count_grid[gz[contact_mask], gy[contact_mask], gx[contact_mask]] |= 128
         
     # Write only non-overlapping bodies to protect existing VF
@@ -974,7 +974,8 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
 
     stamp_offsets = None
     stamp_vals = None
-    shell_offsets = None
+    shell_thick_offsets = None
+    shell_thin_offsets = None
     cache_reuse_count = 0
     MAX_CACHE_REUSE = 50
     current_protrusion_limit = 0.0 
@@ -1015,7 +1016,7 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
                 else:
                     stamp_vals = raw_stamp[coords[:, 0], coords[:, 1], coords[:, 2]].astype(np.uint8)
 
-                # Extract dual-radii shells for ALL modes if shell_count_grid is provided [cite: 856, 857]
+                # Extract dual-radii shells for ALL modes if shell_count_grid is provided
                 if shell_count_grid is not None:
                     # Automatically define dual radii from the single tunnel_radius parameter
                     r_thick = tunnel_radius
@@ -1051,6 +1052,9 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
                     stamp_offsets, stamp_vals, current_protrusion_limit, 
                     filler_id
                 )
+                if success:
+                    # After confirming success, write using the tracking function
+                    _write_candidate_fast(comp_grid, shell_count_grid, cz, cy, cx, stamp_offsets, stamp_vals)
             else:
                 # --- Softcore Mode: Best-of-N (N=3) approach to minimize overlaps ---
                 best_score = float('inf')
@@ -1087,18 +1091,18 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
                 continue
 
             # Increment Thick shell counter
-                if shell_thick_offsets is not None:
-                    stz = (shell_thick_offsets[:, 0] + cz) % shape[0]
-                    sty = (shell_thick_offsets[:, 1] + cy) % shape[1]
-                    stx = (shell_thick_offsets[:, 2] + cx) % shape[2]
-                    _add_shell_safely(shell_count_grid, stz, sty, stx, add_thick=1)
+            if shell_thick_offsets is not None:
+                stz = (shell_thick_offsets[:, 0] + cz) % shape[0]
+                sty = (shell_thick_offsets[:, 1] + cy) % shape[1]
+                stx = (shell_thick_offsets[:, 2] + cx) % shape[2]
+                _add_shell_safely(shell_count_grid, stz, sty, stx, add_thick=1)
 
-                # Increment Thin shell counter
-                if shell_thin_offsets is not None:
-                    stz_th = (shell_thin_offsets[:, 0] + cz) % shape[0]
-                    sty_th = (shell_thin_offsets[:, 1] + cy) % shape[1]
-                    stx_th = (shell_thin_offsets[:, 2] + cx) % shape[2]
-                    _add_shell_safely(shell_count_grid, stz_th, sty_th, stx_th, add_thin=1)
+            # Increment Thin shell counter
+            if shell_thin_offsets is not None:
+                stz_th = (shell_thin_offsets[:, 0] + cz) % shape[0]
+                sty_th = (shell_thin_offsets[:, 1] + cy) % shape[1]
+                stx_th = (shell_thin_offsets[:, 2] + cx) % shape[2]
+                _add_shell_safely(shell_count_grid, stz_th, sty_th, stx_th, add_thin=1)
             
             # Update progress
             current_total = np.sum(comp_grid >= 2)
