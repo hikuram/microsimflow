@@ -721,34 +721,55 @@ def apply_brush_and_write(comp_grid, backbone, radius, physics_mode='thermal', s
     contact_mask = (comp_grid[gz, gy, gx] >= 2)
     
     if shell_count_grid is not None:
-        # Use bitwise OR to set the highest bit (128) as the overlap flag in the uint8 array
+        # Set the overlap flag (highest bit: 128)
         shell_count_grid[gz[contact_mask], gy[contact_mask], gx[contact_mask]] |= 128
         
     # Write only non-overlapping bodies to protect existing VF
     body_mask = ~contact_mask
     comp_grid[gz[body_mask], gy[body_mask], gx[body_mask]] = filler_id
 
-    # Count the shell dilated by (tunnel_radius) voxels for ALL physics modes
+    # Compute dual-radii shell for all modes unconditionally
     if shell_count_grid is not None:
-        size_sh = int((radius + tunnel_radius) * 2 + 2)
-        z_sh, y_sh, x_sh = np.indices((size_sh, size_sh, size_sh))
-        cz_sh, cy_sh, cx_sh = size_sh//2, size_sh//2, size_sh//2
-        shell_brush_mask = (z_sh - cz_sh)**2 + (y_sh - cy_sh)**2 + (x_sh - cx_sh)**2 <= (radius + tunnel_radius)**2
-        local_z_sh, local_y_sh, local_x_sh = np.where(shell_brush_mask)
+        r_thick = tunnel_radius
+        r_thin = max(1, int(np.ceil(tunnel_radius / 2.0)))
         
-        shell_voxels = set()
+        # 1. Thick shell
+        size_thk = int((radius + r_thick) * 2 + 2)
+        z_thk, y_thk, x_thk = np.indices((size_thk, size_thk, size_thk))
+        cz_thk, cy_thk, cx_thk = size_thk//2, size_thk//2, size_thk//2
+        brush_thick = (z_thk - cz_thk)**2 + (y_thk - cy_thk)**2 + (x_thk - cx_thk)**2 <= (radius + r_thick)**2
+        local_z_thk, local_y_thk, local_x_thk = np.where(brush_thick)
+        
+        shell_thick_voxels = set()
         for (z, y, x) in backbone:
-            glob_z = (local_z_sh - cz_sh + z) % shape[0]
-            glob_y = (local_y_sh - cy_sh + y) % shape[1]
-            glob_x = (local_x_sh - cx_sh + x) % shape[2]
+            glob_z = (local_z_thk - cz_thk + z) % shape[0]
+            glob_y = (local_y_thk - cy_thk + y) % shape[1]
+            glob_x = (local_x_thk - cx_thk + x) % shape[2]
             for i in range(len(glob_z)):
-                shell_voxels.add((glob_z[i], glob_y[i], glob_x[i]))
+                shell_thick_voxels.add((glob_z[i], glob_y[i], glob_x[i]))
                 
-        if shell_voxels:
-            sv_array = np.array(list(shell_voxels))
-            sz, sy, sx = sv_array[:, 0], sv_array[:, 1], sv_array[:, 2]
-            # Increment shell count (Secondary candidate)
-            shell_count_grid[sz, sy, sx] += 1
+        if shell_thick_voxels:
+            sv_array = np.array(list(shell_thick_voxels))
+            _add_shell_safely(shell_count_grid, sv_array[:, 0], sv_array[:, 1], sv_array[:, 2], add_thick=1)
+
+        # 2. Thin shell
+        size_thn = int((radius + r_thin) * 2 + 2)
+        z_thn, y_thn, x_thn = np.indices((size_thn, size_thn, size_thn))
+        cz_thn, cy_thn, cx_thn = size_thn//2, size_thn//2, size_thn//2
+        brush_thin = (z_thn - cz_thn)**2 + (y_thn - cy_thn)**2 + (x_thn - cx_thn)**2 <= (radius + r_thin)**2
+        local_z_thn, local_y_thn, local_x_thn = np.where(brush_thin)
+        
+        shell_thin_voxels = set()
+        for (z, y, x) in backbone:
+            glob_z = (local_z_thn - cz_thn + z) % shape[0]
+            glob_y = (local_y_thn - cy_thn + y) % shape[1]
+            glob_x = (local_x_thn - cx_thn + x) % shape[2]
+            for i in range(len(glob_z)):
+                shell_thin_voxels.add((glob_z[i], glob_y[i], glob_x[i]))
+                
+        if shell_thin_voxels:
+            sv_array = np.array(list(shell_thin_voxels))
+            _add_shell_safely(shell_count_grid, sv_array[:, 0], sv_array[:, 1], sv_array[:, 2], add_thin=1)
 
     return len(gz)
 
@@ -908,10 +929,10 @@ def _evaluate_overlap_softcore_fast(comp_grid, tpms_grid, cz, cy, cx,
 
 
 @njit
-def _write_candidate_fast(comp_grid, cz, cy, cx, stamp_offsets, stamp_vals):
+def _write_candidate_fast(comp_grid, shell_count_grid, cz, cy, cx, stamp_offsets, stamp_vals):
     """
     Numba-optimized JIT compiled function. 
-    Writes the selected best candidate to the grid.
+    Writes the selected best candidate to the grid and tracks primary contacts.
     """
     shape_z, shape_y, shape_x = comp_grid.shape
     num_coords = stamp_offsets.shape[0]
@@ -924,8 +945,11 @@ def _write_candidate_fast(comp_grid, cz, cy, cx, stamp_offsets, stamp_vals):
         current_val = comp_grid[tz, ty, tx]
         new_val = stamp_vals[i]
         
-        # Only write filler_id where space is empty (to protect existing VF).
-        if current_val < 2 and new_val > 0:
+        if current_val >= 2:
+            # Overlap! Set the primary contact flag (highest bit: 128)
+            shell_count_grid[tz, ty, tx] |= 128
+        elif new_val > 0:
+            # Only write filler_id where space is empty
             comp_grid[tz, ty, tx] = new_val
 
 
@@ -997,13 +1021,17 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
                     r_thick = tunnel_radius
                     r_thin = max(1, int(np.ceil(tunnel_radius / 2.0)))
                     
+                    # Pad the stamp to prevent dilation from clipping at the bounding box edges
+                    padded_stamp = np.pad(raw_stamp > 0, pad_width=r_thick, mode='constant', constant_values=False)
+                    padded_center = center + r_thick
+                    
                     brush_thick = get_spherical_brush(r_thick)
-                    dilated_thick = binary_dilation(raw_stamp > 0, structure=brush_thick)
-                    shell_thick_offsets = np.argwhere(dilated_thick) - center
+                    dilated_thick = binary_dilation(padded_stamp, structure=brush_thick)
+                    shell_thick_offsets = np.argwhere(dilated_thick) - padded_center
 
                     brush_thin = get_spherical_brush(r_thin)
-                    dilated_thin = binary_dilation(raw_stamp > 0, structure=brush_thin)
-                    shell_thin_offsets = np.argwhere(dilated_thin) - center
+                    dilated_thin = binary_dilation(padded_stamp, structure=brush_thin)
+                    shell_thin_offsets = np.argwhere(dilated_thin) - padded_center
                 else:
                     shell_thick_offsets = None
                     shell_thin_offsets = None
@@ -1192,11 +1220,15 @@ def _paste_mask_to_grid(comp_grid, shell_count_grid, cz, cy, cx, mask, filler_id
         r_thick = tunnel_radius
         r_thin = max(1, int(np.ceil(tunnel_radius / 2.0)))
         
+        # Pad the dynamically generated mask to prevent clipping
+        padded_mask = np.pad(mask, pad_width=r_thick, mode='constant', constant_values=False)
+        padded_center = center + r_thick
+
         # Thick shell
         brush_thick = get_spherical_brush(r_thick)
-        dilated_thick = binary_dilation(mask, structure=brush_thick)
+        dilated_thick = binary_dilation(padded_mask, structure=brush_thick)
         shell_coords_thick = np.argwhere(dilated_thick)
-        sh_offsets_thick = shell_coords_thick - center
+        sh_offsets_thick = shell_coords_thick - padded_center
         sz = (sh_offsets_thick[:, 0] + cz) % shape[0]
         sy = (sh_offsets_thick[:, 1] + cy) % shape[1]
         sx = (sh_offsets_thick[:, 2] + cx) % shape[2]
@@ -1204,9 +1236,9 @@ def _paste_mask_to_grid(comp_grid, shell_count_grid, cz, cy, cx, mask, filler_id
 
         # Thin shell
         brush_thin = get_spherical_brush(r_thin)
-        dilated_thin = binary_dilation(mask, structure=brush_thin)
+        dilated_thin = binary_dilation(padded_mask, structure=brush_thin)
         shell_coords_thin = np.argwhere(dilated_thin)
-        sh_offsets_thin = shell_coords_thin - center
+        sh_offsets_thin = shell_coords_thin - padded_center
         sz_th = (sh_offsets_thin[:, 0] + cz) % shape[0]
         sy_th = (sh_offsets_thin[:, 1] + cy) % shape[1]
         sx_th = (sh_offsets_thin[:, 2] + cx) % shape[2]
