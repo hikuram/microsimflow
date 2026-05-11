@@ -111,15 +111,17 @@ def _make_6n_kernel():
 
 _NEIGHBOR6_KERNEL = _make_6n_kernel()
 
-def _remove_spikes_6n(mask, min_neighbors=2):
+
+def _remove_spikes_anchored(target_mask, anchor_mask, min_neighbors=2):
     """
-    Remove burr/spike voxels using 6-neighbor connectivity.
-    A voxel is removed if it has fewer than `min_neighbors` within the mask.
+    Remove burr/spike voxels, but safely protect 1-voxel thin bridges 
+    by counting the anchor (fillers) as valid neighbors.
     """
-    if not np.any(mask):
-        return mask
-    neighbor_count = convolve(mask.astype(np.uint8), _NEIGHBOR6_KERNEL, mode="wrap")
-    return mask & (neighbor_count >= min_neighbors)
+    if not np.any(target_mask):
+        return target_mask
+    combined = target_mask | anchor_mask
+    neighbor_count = convolve(combined.astype(np.uint8), _NEIGHBOR6_KERNEL, mode="wrap")
+    return target_mask & (neighbor_count >= min_neighbors)
 
 def _fill_polymer_slivers(final_grid, target_id=2, filler_start_id=4):
     """
@@ -139,19 +141,14 @@ def _fill_polymer_slivers(final_grid, target_id=2, filler_start_id=4):
 
     return final_grid
 
-def _cleanup_small_components(mask, min_component_size=2):
-    """
-    Remove tiny isolated connected components from a boolean mask 
-    using the PBC-aware Union-Find algorithm.
-    """
-    if not np.any(mask):
-        return mask
 
-    # Note: For cleanup of trivial spikes, strict PBC is less critical, 
-    # but using a generic approach ensures stability. Since we dropped scipy.label,
-    # we implement a lightweight boolean filter here.
-    neighbor_count = convolve(mask.astype(np.uint8), _NEIGHBOR6_KERNEL, mode="wrap")
-    return mask & (neighbor_count >= min_component_size - 1)
+def _cleanup_small_components_anchored(target_mask, anchor_mask, min_component_size=2):
+    """Same protection logic applied to isolated component cleanup."""
+    if not np.any(target_mask):
+        return target_mask
+    combined = target_mask | anchor_mask
+    neighbor_count = convolve(combined.astype(np.uint8), _NEIGHBOR6_KERNEL, mode="wrap")
+    return target_mask & (neighbor_count >= min_component_size - 1)
 
 def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics_mode='thermal', 
                             primary_inter_id=3, secondary_inter_id=2, filler_start_id=4,
@@ -171,6 +168,8 @@ def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics
         tunnel_mask = (n_thin >= 1) & (n_thick >= 2) & (final_grid < filler_start_id)
         final_grid[tunnel_mask] = primary_inter_id
 
+    filler_mask = (final_grid >= filler_start_id)
+
     # --- Common Interface Cleanup ---
     # 1) Polymer sliver fill
     for _ in range(sliver_fill_iters):
@@ -180,12 +179,12 @@ def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics
         if after == before:
             break
 
-    # 2) Spike removal on interface only
+    # 2) Spike removal on interface only (Anchored by fillers to prevent bridge erosion)
     original_interface_mask = (final_grid == primary_inter_id)
-    interface_mask = _remove_spikes_6n(original_interface_mask, min_neighbors=spike_min_neighbors)
+    interface_mask = _remove_spikes_anchored(original_interface_mask, filler_mask, min_neighbors=spike_min_neighbors)
 
-    # 3) Small component cleanup
-    interface_mask = _cleanup_small_components(interface_mask, min_component_size=min_interface_component_size)
+    # 3) Small component cleanup (Anchored)
+    interface_mask = _cleanup_small_components_anchored(interface_mask, filler_mask, min_component_size=min_interface_component_size)
 
     # Identify voxels removed during cleanup
     removed_interface = original_interface_mask & (~interface_mask)
@@ -258,8 +257,9 @@ def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics
             raw_kapitza_mask = (final_grid < 2) & (n_thin >= 1) & (n_thick >= 2)
             
             cleaned_kapitza_mask = raw_kapitza_mask.copy()
-            cleaned_kapitza_mask = _remove_spikes_6n(cleaned_kapitza_mask, min_neighbors=spike_min_neighbors)
-            cleaned_kapitza_mask = _cleanup_small_components(cleaned_kapitza_mask, min_component_size=min_interface_component_size)
+            
+            cleaned_kapitza_mask = _remove_spikes_anchored(cleaned_kapitza_mask, filler_mask, min_neighbors=spike_min_neighbors)
+            cleaned_kapitza_mask = _cleanup_small_components_anchored(cleaned_kapitza_mask, filler_mask, min_component_size=min_interface_component_size)
             
             final_grid[cleaned_kapitza_mask] = secondary_inter_id
 
