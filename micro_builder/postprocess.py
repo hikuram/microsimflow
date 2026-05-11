@@ -166,7 +166,9 @@ def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics
 
     if physics_mode in ['electrical', 'mechanics', 'permeability'] and shell_count_grid is not None:
         pure_shell_counts = shell_count_grid & 127
-        tunnel_mask = (pure_shell_counts >= 2) & (final_grid < filler_start_id)
+        n_thick = pure_shell_counts % 16
+        n_thin = pure_shell_counts // 16
+        tunnel_mask = (n_thin >= 1) & (n_thick >= 2) & (final_grid < filler_start_id)
         final_grid[tunnel_mask] = primary_inter_id
 
     # --- Common Interface Cleanup ---
@@ -247,7 +249,6 @@ def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics
             # 2. Secondary Interface (Kapitza Bridge / Tunneling)
             # Shell counts are stored in the lower 7 bits.
             pure_shell_counts = shell_count_grid & 127
-            
             # Decode counters from bit partitions
             n_thick = pure_shell_counts % 16
             n_thin = pure_shell_counts // 16
