@@ -175,6 +175,8 @@ def run_puma_elasticity(final_grid, voxel_size, prop_map):
         return results, total_time
 
     except Exception as e:
+        print(f"PuMA encountered an error during elasticity computation: {e}")
+        return [None] * 6, 0.0
 
 
 def run_puma_permeability(binary_grid, voxel_size, solid_cutoff=(0, 0)):
@@ -245,5 +247,3 @@ def run_puma_permeability(binary_grid, voxel_size, solid_cutoff=(0, 0)):
         print(f"PuMA encountered an error during permeability computation: {e}")
         return [None] * 6, 0.0
 
-        print(f"PuMA encountered an error during elasticity computation: {e}")
-        return [None] * 6, 0.0
