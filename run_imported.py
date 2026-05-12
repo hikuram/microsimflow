@@ -15,17 +15,17 @@ import subprocess
 
 # --- Import from Microsimflow internal modules ---
 from micro_builder import (
-    summarize_phase_fractions, # [cite: 1699]
-    compute_structure_metrics, # [cite: 1701]
-    export_chfem_inputs,       # [cite: 1711]
-    export_visualization_vti   # [cite: 1704]
+    summarize_phase_fractions,
+    compute_structure_metrics,
+    export_chfem_inputs,
+    export_visualization_vti
 )
 # Advanced PoreSpy metrics module (implemented in Phase B)
 from micro_builder.postprocess import compute_advanced_metrics 
 
-from pipeline.io_csv import structure_metrics_to_csv_fields, parse_chfem_log # [cite: 764, 770]
-from pipeline.solver_puma import run_puma_elasticity, run_puma_laplace # [cite: 1796, 1802]
-from pipeline.viz_export import save_thumbnail_png # [cite: 810]
+from pipeline.io_csv import structure_metrics_to_csv_fields, parse_chfem_log
+from pipeline.solver_puma import run_puma_elasticity, run_puma_laplace
+from pipeline.viz_export import save_thumbnail_png
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Microsimflow - Analysis Pipeline for Imported Real-Image Models")
@@ -76,7 +76,7 @@ def main():
     filler_start_id = 4
     
     # --- Setup Physical Property Map ---
-    # Default values follow run_pipeline.py logic [cite: 939-941]
+    # Default values follow run_pipeline.py logic
     if args.physics_mode == 'mechanics':
         prop_A = args.prop_A or "1.0 0.35"
         prop_B = prop_A
@@ -107,14 +107,14 @@ def main():
     phase_stats = summarize_phase_fractions(
         final_grid, secondary_inter_id=secondary_inter_id, 
         primary_inter_id=primary_inter_id, filler_start_id=filler_start_id
-    ) # [cite: 1699]
+    )
     
     # 3. Extract Structure Metrics
     print("  -> Computing connectivity and structure metrics...")
     structure_metrics = compute_structure_metrics(
         final_grid, primary_inter_id=primary_inter_id, 
         secondary_inter_id=secondary_inter_id, filler_start_id=filler_start_id
-    ) # [cite: 1701]
+    )
     
     # Optional advanced morphology analysis via PoreSpy
     if args.advanced_metrics:
@@ -123,16 +123,16 @@ def main():
         )
         structure_metrics.update(adv)
         
-    metric_fields = structure_metrics_to_csv_fields(structure_metrics) # [cite: 770]
+    metric_fields = structure_metrics_to_csv_fields(structure_metrics)
     
     # 4. Generate Visualizations (VTI and 2D Thumbnail)
     if not args.skip_vti:
         vti_path = f"{args.import_path}.vti"
-        export_visualization_vti(final_grid, vti_path, voxel_size=voxel_size) # [cite: 1704]
+        export_visualization_vti(final_grid, vti_path, voxel_size=voxel_size)
         print(f"  -> Exported VTI: {vti_path}")
         
     slice_path = f"{args.import_path}_slice.png"
-    save_thumbnail_png(final_grid, slice_path) # [cite: 810]
+    save_thumbnail_png(final_grid, slice_path)
 
     # 5. Solver Execution
     chfem_time, puma_time = "", ""
