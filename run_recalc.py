@@ -26,7 +26,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Recalculate solvers and metrics for existing Microsimflow models.")
     parser.add_argument("--csv_log", required=True, help="Target CSV log to process")
     parser.add_argument("--solver", choices=['chfem', 'puma', 'both', 'skip'], default='chfem')
-    parser.add_argument("--physics_mode", choices=['thermal', 'electrical', 'mechanics'], default='thermal')
+    parser.add_argument("--physics_mode", choices=['thermal', 'electrical', 'mechanics', 'permeability'], default='thermal')
+    parser.add_argument("--void_phases", type=int, nargs='+', default=[0], help="Phase IDs to be treated as void in permeability mode.")
     parser.add_argument("--overwrite_props", action="store_true", help="Ignore old .nf properties and use CLI defaults")
     parser.add_argument("--advanced_metrics", action="store_true", help="Recalculate advanced PoreSpy metrics")
     parser.add_argument("--pbc_pad", type=int, default=20, help="Padding voxels for PBC-aware morphology metrics")
@@ -139,20 +140,6 @@ def main():
         # 5. Execute Solvers
         comp_suffixes = ["xx", "yy", "zz", "yz", "zx", "xy"]
         
-        if args.solver in ["chfem", "both"]:
-            print(f"  Running chfem ({mode})...")
-            log_file = f"{basename}_metrics.txt"
-            subprocess.run(["chfem_exec", nf_file, raw_file, "-m", log_file])
-            res_diag, ctime = parse_chfem_log(log_file)
-            
-            if res_diag[0] != "":
-                if "chfem_Time_s" in header:
-                    row[header.index("chfem_Time_s")] = f"{ctime:.2f}"
-                for i, suffix in enumerate(comp_suffixes):
-                    col_c = f"chfem_T{suffix}"
-                    if col_c in header:
-                        row[header.index(col_c)] = res_diag[i]
-
         if args.solver in ["puma", "both"]:
             print(f"  Running puma ({mode})...")
             if mode == 'mechanics':
@@ -164,6 +151,21 @@ def main():
                         col_p = f"puma_T{suffix}"
                         if col_p in header:
                             row[header.index(col_p)] = puma_results[i]
+                            
+            elif mode == 'permeability':
+                export_grid = np.zeros_like(final_grid)
+                for vp in args.void_phases:
+                    export_grid[final_grid == vp] = 1
+                
+                puma_results, ptime = run_puma_permeability(export_grid, voxel_size, solid_cutoff=(0, 0))
+                if puma_results[0] is not None:
+                    if "puma_Time_s" in header:
+                        row[header.index("puma_Time_s")] = f"{ptime:.2f}"
+                    for i, suffix in enumerate(comp_suffixes):
+                        col_p = f"puma_T{suffix}"
+                        if col_p in header:
+                            row[header.index(col_p)] = puma_results[i]
+                            
             else:
                 cond_map = {k: float(v.split()[0]) for k, v in prop_map.items()}
                 pkx, pky, pkz, ptime = run_puma_laplace(final_grid, voxel_size, mode, cond_map)
