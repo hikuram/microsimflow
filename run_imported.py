@@ -32,7 +32,8 @@ def parse_args():
     parser.add_argument("--import_path", type=str, required=True, 
                         help="Base path to imported model without extension (e.g., imported_models/sample_pbc)")
     parser.add_argument("--solver", type=str, choices=['chfem', 'puma', 'both', 'skip'], default='chfem', help="Solvers to execute")
-    parser.add_argument("--physics_mode", type=str, choices=['thermal', 'electrical', 'mechanics'], default='thermal')
+    parser.add_argument("--physics_mode", type=str, choices=['thermal', 'electrical', 'mechanics', 'permeability'], default='thermal')
+    parser.add_argument("--void_phases", type=int, nargs='+', default=[0], help="Phase IDs to be treated as void (fluid) in permeability mode")
     parser.add_argument("--csv_log", type=str, default="imported_results.csv", help="CSV log file path")
     parser.add_argument("--advanced_metrics", action="store_true", 
                         help="Enable PoreSpy advanced morphological analysis (SSA, Sphericity, Autocorrelation)")
@@ -137,29 +138,43 @@ def main():
     chfem_time, puma_time = "", ""
     chfem_results, puma_results = [""] * 6, [""] * 6
     
+    if args.physics_mode == 'permeability':
+        print(f"  -> Binarizing grid for permeability mode (Void phases: {args.void_phases})")
+        export_grid = np.zeros_like(final_grid)
+        for vp in args.void_phases:
+            export_grid[final_grid == vp] = 1
+        export_prop_map = {0: "0.0", 1: "1.0"} 
+    else:
+        export_grid = final_grid
+        export_prop_map = prop_map
+
     if args.solver != 'skip':
         # Re-export solver inputs to ensure metadata/properties are in sync
         export_chfem_inputs(
-            final_grid, args.import_path, voxel_size=voxel_size, 
-            physics_mode=args.physics_mode, prop_map=prop_map
-        ) # [cite: 1711]
+            export_grid, args.import_path, voxel_size=voxel_size, 
+            physics_mode=args.physics_mode, prop_map=export_prop_map
+        )
     
-        # A. Run chfem solver (Native binary called via subprocess)
+        # A. Run chfem solver
         if args.solver in ['chfem', 'both']:
             print(f"  -> Running chfem solver ({args.physics_mode})...")
             log_file = f"{args.import_path}_metrics.txt"
             chfem_cmd = ["chfem_exec", f"{args.import_path}.nf", f"{args.import_path}.raw", "-m", log_file]
             subprocess.run(chfem_cmd)
             
-            res_diag, ctime = parse_chfem_log(log_file) # [cite: 764]
+            res_diag, ctime = parse_chfem_log(log_file)
             if res_diag[0] != "":
                 chfem_time, chfem_results = f"{ctime:.2f}", res_diag
                 
-        # B. Run PuMA solver (via pipeline.solver_puma API)
+        # B. Run PuMA solver
         if args.solver in ['puma', 'both']:
             print(f"  -> Running PuMA solver ({args.physics_mode})...")
             if args.physics_mode == 'mechanics':
-                puma_res_raw, ptime = run_puma_elasticity(final_grid, voxel_size, prop_map) # [cite: 1802]
+                puma_res_raw, ptime = run_puma_elasticity(final_grid, voxel_size, prop_map)
+                if puma_res_raw[0] is not None:
+                    puma_time, puma_results = f"{ptime:.2f}", puma_res_raw
+            elif args.physics_mode == 'permeability':
+                puma_res_raw, ptime = run_puma_permeability(export_grid, voxel_size, solid_cutoff=(0, 0))
                 if puma_res_raw[0] is not None:
                     puma_time, puma_results = f"{ptime:.2f}", puma_res_raw
             else:
@@ -167,7 +182,7 @@ def main():
                 cond_map = {k: float(v.split()[0]) for k, v in prop_map.items()}
                 pkx, pky, pkz, ptime = run_puma_laplace(
                     final_grid, voxel_size, args.physics_mode, cond_map
-                ) # [cite: 1796]
+                )
                 if pkx is not None:
                     puma_time = f"{ptime:.2f}"
                     puma_results = [pkx, pky, pkz, "", "", ""]
