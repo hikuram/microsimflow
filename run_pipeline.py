@@ -135,7 +135,7 @@ def main():
     export_common_legend()
     
     # Set default physical properties according to the physics mode
-    if args.physics_mode in ['mechanics', 'permeability']:
+    if args.physics_mode == 'thermal':
         prop_A = args.prop_A or "0.3"
         prop_B = args.prop_B or "0.3"
         prop_secondary_inter = args.prop_inter2 or "3.0"
