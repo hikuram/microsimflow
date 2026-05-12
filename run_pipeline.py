@@ -42,7 +42,7 @@ from pipeline.io_csv import (
     structure_metrics_to_csv_fields,
     upgrade_existing_csv_log,
 )
-from pipeline.solver_puma import run_puma_elasticity, run_puma_laplace
+from pipeline.solver_puma import run_puma_elasticity, run_puma_laplace, run_puma_permeability
 from pipeline.viz_export import (
     export_common_legend,
     export_vtm_wrapper,
@@ -484,10 +484,16 @@ def main():
                 chfem_time, chfem_results = f"{ctime:.2f}", res_diag
 
         if args.solver in ["puma", "both"]:
-            if args.physics_mode == 'mechanics':
+            if args.physics_mode == "mechanics":
                 puma_results, ptime = run_puma_elasticity(final_grid, args.voxel_size, prop_map)
                 if puma_results[0] is not None:
                     puma_time = f"{ptime:.2f}"
+        
+            elif args.physics_mode == "permeability":
+                puma_results, ptime = run_puma_permeability(export_grid, args.voxel_size, solid_cutoff=(0, 0))
+                if puma_results[0] is not None:
+                    puma_time = f"{ptime:.2f}"
+                    
             else:
                 cond_map = {k: float(v.split()[0]) for k, v in prop_map.items()}
                 pkx, pky, pkz, ptime = run_puma_laplace(final_grid, args.voxel_size, args.physics_mode, cond_map)
@@ -495,7 +501,7 @@ def main():
                     puma_time = f"{ptime:.2f}"
                     # PuMA (Laplace) only provides 3 diagonal components
                     puma_results = [pkx, pky, pkz, "", "", ""]
-
+        
         # =====================================================================
         # --- Extract and embed physical fields into VTI ---
         # =====================================================================
