@@ -10,6 +10,14 @@ PUMA_ELASTICITY_FE_SOLVER = "minres"
 PUMA_ELASTICITY_SIDE_BC = "p"
 PUMA_ELASTICITY_MAXITER = 20000
 
+PUMA_PERMEABILITY_SOLVER = "minres"
+PUMA_PERMEABILITY_TOL = 1e-8
+PUMA_PERMEABILITY_MAXITER = 10000
+PUMA_PERMEABILITY_MATRIX_FREE = True
+PUMA_PERMEABILITY_PRECONDITION = False
+PUMA_PERMEABILITY_OUTPUT_FIELDS = False
+
+
 def get_puma_elasticity_namespace(puma):
     """Select the PuMA namespace that exposes elasticity helpers."""
     if hasattr(puma, 'experimental') and hasattr(puma.experimental, 'ElasticityMap'):
@@ -167,5 +175,75 @@ def run_puma_elasticity(final_grid, voxel_size, prop_map):
         return results, total_time
 
     except Exception as e:
+
+
+def run_puma_permeability(binary_grid, voxel_size, solid_cutoff=(0, 0)):
+    """Solve permeability using PuMA's Python API."""
+
+    try:
+        import pumapy as puma
+    except ImportError:
+        print("Error: pumapy module not found. Cannot run PuMA permeability solver.")
+        return [None] * 6, 0.0
+
+    unique_values = set(np.unique(binary_grid).astype(int).tolist())
+    if not unique_values.issubset({0, 1}):
+        print(f"PuMA permeability requires a binary grid, but got IDs: {sorted(unique_values)}")
+        return [None] * 6, 0.0
+
+    solid_mask = (binary_grid >= solid_cutoff[0]) & (binary_grid <= solid_cutoff[1])
+    solid_count = int(np.count_nonzero(solid_mask))
+    fluid_count = int(binary_grid.size - solid_count)
+
+    if solid_count == 0 or fluid_count == 0:
+        print(
+            "PuMA permeability requires both solid and fluid voxels. "
+            f"solid={solid_count}, fluid={fluid_count}"
+        )
+        return [None] * 6, 0.0
+
+    grid_c = binary_grid.transpose(2, 1, 0).astype(np.uint16).copy(order="C")
+    ws = puma.Workspace.from_array(grid_c)
+    ws.voxel_length = voxel_size
+
+    print("\n--- Running PuMA Permeability Solver ---")
+    print(f"PuMA permeability solid_cutoff={solid_cutoff}")
+    print(f"Binary grid IDs: {sorted(unique_values)}")
+    print(f"Fluid voxel fraction: {fluid_count / binary_grid.size:.6f}")
+
+    t0 = time.time()
+
+    try:
+        keff, _fields = puma.compute_permeability(
+            ws,
+            solid_cutoff,
+            direction="xyz",
+            tol=PUMA_PERMEABILITY_TOL,
+            maxiter=PUMA_PERMEABILITY_MAXITER,
+            solver_type=PUMA_PERMEABILITY_SOLVER,
+            matrix_free=PUMA_PERMEABILITY_MATRIX_FREE,
+            precondition=PUMA_PERMEABILITY_PRECONDITION,
+            output_fields=PUMA_PERMEABILITY_OUTPUT_FIELDS,
+        )
+
+        total_time = time.time() - t0
+        k = np.asarray(keff, dtype=float)
+
+        results = [
+            float(k[0, 0]),
+            float(k[1, 1]),
+            float(k[2, 2]),
+            float(k[1, 2]),
+            float(k[2, 0]),
+            float(k[0, 1]),
+        ]
+
+        print(f"PuMA permeability computation completed in {total_time:.2f}s")
+        return results, total_time
+
+    except Exception as e:
+        print(f"PuMA encountered an error during permeability computation: {e}")
+        return [None] * 6, 0.0
+
         print(f"PuMA encountered an error during elasticity computation: {e}")
         return [None] * 6, 0.0
