@@ -46,6 +46,7 @@ RUN micromamba install -y -n base -c conda-forge \
     pandas \
     pyvista \
     pillow \
+    porespy \
     numba \
     && micromamba clean --all --yes
 
