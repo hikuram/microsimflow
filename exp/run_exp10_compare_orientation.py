@@ -42,7 +42,7 @@ def run():
                 for seed in args.seeds:
                     recipe = f"rigidfiber:{vf:.4f}:length={args.fiber_length}:radius={args.fiber_radius}:mean_dir=0,0,1:kappa={kappa}:prop={filler_prop}"
                     
-                    k_str = f"{int(kappa)}" if kappa.is_integer() else f"{kappa}"
+                    k_str = f"{int(kappa)}" if float(kappa).is_integer() else f"{kappa}"
                     basename = os.path.join(out_dir, f"exp10_{profile_name}_vf{vf:.2f}_seed{seed}_K{k_str}")
                     
                     extra_args = [
