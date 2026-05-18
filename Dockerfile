@@ -47,6 +47,7 @@ RUN micromamba install -y -n base -c conda-forge \
     pyvista \
     pillow \
     porespy \
+    streamlit \
     numba \
     && micromamba clean --all --yes
 
