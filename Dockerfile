@@ -31,7 +31,7 @@ RUN mkdir -p $MAMBA_ROOT_PREFIX/bin && \
 
 # 2. Install Python libraries and Jupyter
 RUN micromamba install -y -n base -c conda-forge \
-    python=3.10 \
+    python=3.11 \
     cmake \
     puma \
     jupyterlab \
