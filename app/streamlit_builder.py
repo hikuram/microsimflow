@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import os
 import sys
 
@@ -66,6 +67,25 @@ DEFAULT_FILLER_PROP_BY_MODE = {
 }
 
 
+def stage_key(stage_id: int, name: str) -> str:
+    return f"filler_stage_{stage_id}_{name}"
+
+
+def init_filler_stage(stage_id: int) -> None:
+    filler_type_key = stage_key(stage_id, "type")
+    params_key = stage_key(stage_id, "params")
+    vf_min_key = stage_key(stage_id, "vf_min")
+    vf_max_key = stage_key(stage_id, "vf_max")
+    vf_steps_key = stage_key(stage_id, "vf_steps")
+
+    default_type = "rigidfiber"
+    st.session_state.setdefault(filler_type_key, default_type)
+    st.session_state.setdefault(params_key, DEFAULT_FILLER_PARAMS[default_type])
+    st.session_state.setdefault(vf_min_key, 0.05)
+    st.session_state.setdefault(vf_max_key, 0.05)
+    st.session_state.setdefault(vf_steps_key, 1)
+
+
 def init_state() -> None:
     enforce_preview_cache_limits()
     ensure_project_dir(CACHE_DIR_NAME)
@@ -77,78 +97,119 @@ def init_state() -> None:
     st.session_state.setdefault("execution_logs", {})
     st.session_state.setdefault("last_queue_message", None)
     st.session_state.setdefault("filler_params_dict", DEFAULT_FILLER_PARAMS.copy())
-    st.session_state.setdefault("sweep_f_type", "rigidfiber")
-    st.session_state.setdefault(
-        "sweep_params",
-        st.session_state.filler_params_dict["rigidfiber"],
-    )
     st.session_state.setdefault("builder_physics_mode", "electrical")
     st.session_state.setdefault("builder_solver", "chfem")
     st.session_state.setdefault(
         "builder_default_filler_prop",
         DEFAULT_FILLER_PROP_BY_MODE[st.session_state.builder_physics_mode],
     )
-    st.session_state.setdefault("sweep_filler_prop", st.session_state.builder_default_filler_prop)
+    st.session_state.setdefault("filler_stage_ids", [0])
+    st.session_state.setdefault("next_filler_stage_id", 1)
+    for stage_id in st.session_state.filler_stage_ids:
+        init_filler_stage(int(stage_id))
 
 
 def on_builder_physics_mode_change() -> None:
     mode = st.session_state.builder_physics_mode or "electrical"
     default_prop = DEFAULT_FILLER_PROP_BY_MODE.get(mode, "1e4")
     st.session_state.builder_default_filler_prop = default_prop
-    st.session_state.sweep_filler_prop = default_prop
 
 
-def on_builder_default_filler_prop_change() -> None:
-    st.session_state.sweep_filler_prop = st.session_state.builder_default_filler_prop
+def add_filler_stage() -> None:
+    stage_id = int(st.session_state.next_filler_stage_id)
+    st.session_state.filler_stage_ids.append(stage_id)
+    st.session_state.next_filler_stage_id = stage_id + 1
+    init_filler_stage(stage_id)
 
 
-def on_filler_type_change() -> None:
-    filler_type = st.session_state.sweep_f_type or "rigidfiber"
-    st.session_state.sweep_f_type = filler_type
-    st.session_state.sweep_params = st.session_state.filler_params_dict.get(
-        filler_type, ""
-    )
+def remove_filler_stage(stage_id: int) -> None:
+    if len(st.session_state.filler_stage_ids) <= 1:
+        st.session_state.last_queue_message = "Keep at least one filler stage."
+        return
+    st.session_state.filler_stage_ids = [
+        int(value)
+        for value in st.session_state.filler_stage_ids
+        if int(value) != int(stage_id)
+    ]
 
 
-def on_params_change() -> None:
-    filler_type = st.session_state.sweep_f_type or "rigidfiber"
-    st.session_state.filler_params_dict[filler_type] = st.session_state.sweep_params
+def on_stage_filler_type_change(stage_id: int) -> None:
+    type_key = stage_key(stage_id, "type")
+    params_key = stage_key(stage_id, "params")
+    filler_type = st.session_state.get(type_key) or "rigidfiber"
+    st.session_state[params_key] = DEFAULT_FILLER_PARAMS.get(filler_type, "")
 
 
-def reset_current_params() -> None:
-    filler_type = st.session_state.sweep_f_type or "rigidfiber"
-    default_params = DEFAULT_FILLER_PARAMS.get(filler_type, "")
-    st.session_state.filler_params_dict[filler_type] = default_params
-    st.session_state.sweep_params = default_params
+def reset_stage_params(stage_id: int) -> None:
+    type_key = stage_key(stage_id, "type")
+    params_key = stage_key(stage_id, "params")
+    filler_type = st.session_state.get(type_key) or "rigidfiber"
+    st.session_state[params_key] = DEFAULT_FILLER_PARAMS.get(filler_type, "")
 
 
-def build_recipe_text(filler_type: str, volume_fraction: float, params: str, filler_prop: str) -> str:
-    parts = [part.strip() for part in params.split(":") if part.strip()]
-    parts = [part for part in parts if not part.startswith("prop=")]
-    prop_value = filler_prop.strip().replace(" ", "_")
-    if prop_value:
-        parts.append(f"prop={prop_value}")
+def normalize_prop_value(value: str) -> str:
+    return value.strip().replace(" ", "_")
+
+
+def build_recipe_text(
+    filler_type: str,
+    volume_fraction: float,
+    params: str,
+) -> str:
+    raw_parts = [part.strip() for part in params.split(":") if part.strip()]
+    parts = []
+    has_prop = False
+
+    for part in raw_parts:
+        if part.startswith("prop="):
+            prop_value = normalize_prop_value(part.split("=", 1)[1])
+            if prop_value:
+                parts.append(f"prop={prop_value}")
+                has_prop = True
+        else:
+            parts.append(part)
+
+    if not has_prop:
+        default_prop = normalize_prop_value(
+            str(st.session_state.get("builder_default_filler_prop", ""))
+        )
+        if default_prop:
+            parts.append(f"prop={default_prop}")
+
     recipe_prefix = f"{filler_type}:{volume_fraction:.4f}"
     if parts:
         return f"{recipe_prefix}:{':'.join(parts)}"
     return recipe_prefix
 
 
+def build_stage_recipe(stage_id: int, volume_fraction: float) -> str:
+    filler_type = st.session_state.get(stage_key(stage_id, "type")) or "rigidfiber"
+    params = st.session_state.get(stage_key(stage_id, "params"), "").strip()
+    return build_recipe_text(filler_type, volume_fraction, params)
+
+
 def generate_and_add_sweep() -> None:
-    vf_min = float(st.session_state.sweep_vf_min)
-    vf_max = float(st.session_state.sweep_vf_max)
     stretch_min = float(st.session_state.sweep_s_min)
     stretch_max = float(st.session_state.sweep_s_max)
-    if vf_min > vf_max or stretch_min > stretch_max:
+    if stretch_min > stretch_max:
         st.session_state.last_queue_message = (
-            "Min values must be less than or equal to max values."
+            "Stretch min must be less than or equal to max."
         )
         return
 
-    filler_type = st.session_state.sweep_f_type or "rigidfiber"
-    params = st.session_state.sweep_params.strip()
-    filler_prop = st.session_state.sweep_filler_prop.strip()
-    vfs = np.linspace(vf_min, vf_max, int(st.session_state.sweep_vf_steps))
+    stage_ids = [int(value) for value in st.session_state.filler_stage_ids]
+    vf_arrays = []
+    for stage_id in stage_ids:
+        vf_min = float(st.session_state[stage_key(stage_id, "vf_min")])
+        vf_max = float(st.session_state[stage_key(stage_id, "vf_max")])
+        vf_steps = int(st.session_state[stage_key(stage_id, "vf_steps")])
+        if vf_min > vf_max:
+            st.session_state.last_queue_message = (
+                "Filler volume fraction min must be less than or equal to max."
+            )
+            return
+        vf_arrays.append(np.linspace(vf_min, vf_max, vf_steps))
+
     stretches = np.linspace(
         stretch_min,
         stretch_max,
@@ -161,10 +222,17 @@ def generate_and_add_sweep() -> None:
     for seed_offset in range(seed_count):
         current_seed = seed_start + seed_offset if seed_start >= 0 else -1
         for stretch in stretches:
-            for vf in vfs:
+            for vf_tuple in itertools.product(*vf_arrays):
+                recipes = [
+                    build_stage_recipe(stage_id, float(vf))
+                    for stage_id, vf in zip(stage_ids, vf_tuple, strict=True)
+                    if float(vf) > 0
+                ]
+                if not recipes:
+                    continue
                 new_rows.append(
                     {
-                        "Recipe": build_recipe_text(filler_type, float(vf), params, filler_prop),
+                        "Recipe": " ".join(recipes),
                         "Stretch": float(stretch),
                         "Seed": current_seed,
                         "Status": STATUS_PENDING,
@@ -302,15 +370,18 @@ def run_cli_for_step(
     if seed >= 0:
         cmd.extend(["--seed", str(seed)])
     if void_phases_opt:
-        cmd.extend(["--void_phases", *[part.strip() for part in void_phases_opt.split(",")]])
+        cmd.extend(
+            ["--void_phases", *[part.strip() for part in void_phases_opt.split(",")]]
+        )
     if skip_structure_metrics:
         cmd.append("--skip_structure_metrics")
     if advanced_metrics:
         cmd.append("--advanced_metrics")
-    cmd.extend(["--recipe", recipe])
+    recipe_parts = [part.strip() for part in str(recipe).split() if part.strip()]
+    if recipe_parts:
+        cmd.append("--recipe")
+        cmd.extend(recipe_parts)
     return run_project_command(cmd)
-
-
 
 
 def render_builder() -> None:
@@ -320,11 +391,28 @@ def render_builder() -> None:
         st.markdown("### :material/settings: Global settings")
         with st.container(border=True):
             grid_col, voxel_col = st.columns(2)
-            grid_size = grid_col.number_input("Grid size", value=100, step=10, min_value=10)
-            voxel_size = voxel_col.number_input("Voxel size (m)", value=1e-8, format="%.1e")
+            grid_size = grid_col.number_input(
+                "Grid size",
+                value=100,
+                step=10,
+                min_value=10,
+            )
+            voxel_size = voxel_col.number_input(
+                "Voxel size (m)",
+                value=1e-8,
+                format="%.1e",
+            )
             bg_type = st.segmented_control(
                 "Background type",
-                ["single", "gyroid", "lamellar", "cylinder", "bcc", "sea_island", "island_sea"],
+                [
+                    "single",
+                    "gyroid",
+                    "lamellar",
+                    "cylinder",
+                    "bcc",
+                    "sea_island",
+                    "island_sea",
+                ],
                 default="gyroid",
             )
             phase_a_ratio = st.slider("Background ratio A", 0.1, 0.9, 0.5)
@@ -343,15 +431,14 @@ def render_builder() -> None:
                 ["skip", "chfem", "puma", "both"],
                 key="builder_solver",
             )
-            st.text_input(
-                "Default filler prop",
-                key="builder_default_filler_prop",
-                on_change=on_builder_default_filler_prop_change,
-                help="Applied to newly generated recipes. Spaces are converted to underscores.",
-            )
             st.markdown("**Material properties**")
             if physics_mode == "mechanics":
-                p_a, p_b, p_pri, p_sec = "1.0 0.35", "1.0 0.35", "100.0 0.25", "10.0 0.30"
+                p_a, p_b, p_pri, p_sec = (
+                    "1.0 0.35",
+                    "1.0 0.35",
+                    "100.0 0.25",
+                    "10.0 0.30",
+                )
             elif physics_mode == "electrical":
                 p_a, p_b, p_pri, p_sec = "1e-4", "1e-4", "1e-1", "1e-3"
             else:
@@ -366,26 +453,74 @@ def render_builder() -> None:
             void_phases_opt = ""
             if physics_mode == "permeability":
                 void_phases_opt = st.text_input("Void phases", value="0")
+            st.text_input(
+                "Default filler prop",
+                key="builder_default_filler_prop",
+                help=(
+                    "Applied when a filler stage Parameters field does not "
+                    "include prop=. Spaces are converted to underscores."
+                ),
+            )
 
         with st.expander("Advanced export and metrics", icon=":material/save:"):
             writer_opt = st.selectbox("Export format", ["vti", "zstd", "arrow"], index=0)
-            vti_fields_opt = st.radio("Embed fields to VTI", ["off", "on"], index=0, horizontal=True)
+            vti_fields_opt = st.radio(
+                "Embed fields to VTI",
+                ["off", "on"],
+                index=0,
+                horizontal=True,
+            )
             skip_structure_metrics = st.toggle("Skip structure metrics", value=False)
             advanced_metrics = st.toggle("Calculate advanced metrics", value=False)
 
         with st.expander("Deformation and microstructure", icon=":material/transform:"):
             poisson_ratio = st.number_input("Poisson ratio", value=0.4, step=0.1)
-            deformation_mode = st.radio("Deformation mode", ["fine", "coarse"], index=0, horizontal=True)
+            deformation_mode = st.radio(
+                "Deformation mode",
+                ["fine", "coarse"],
+                index=0,
+                horizontal=True,
+            )
             radius_col, contact_col = st.columns(2)
-            tunnel_radius = radius_col.number_input("Tunnel radius", value=2, step=1, min_value=1)
-            contact_radius = contact_col.number_input("Contact radius", value=1, step=1, min_value=1)
-            fine_volume_tol = st.number_input("Fine volume tolerance", value=0.01, format="%.3f")
-            fine_max_tilt_deg = st.number_input("Fine max tilt (deg)", value=0.10, format="%.2f")
-            fine_ledger_cap = st.number_input("Fine ledger cap", value=0.01, format="%.3f")
+            tunnel_radius = radius_col.number_input(
+                "Tunnel radius",
+                value=2,
+                step=1,
+                min_value=1,
+            )
+            contact_radius = contact_col.number_input(
+                "Contact radius",
+                value=1,
+                step=1,
+                min_value=1,
+            )
+            fine_volume_tol = st.number_input(
+                "Fine volume tolerance",
+                value=0.01,
+                format="%.3f",
+            )
+            fine_max_tilt_deg = st.number_input(
+                "Fine max tilt (deg)",
+                value=0.10,
+                format="%.2f",
+            )
+            fine_ledger_cap = st.number_input(
+                "Fine ledger cap",
+                value=0.01,
+                format="%.3f",
+            )
 
         st.space("small")
-        csv_file_path = st.text_input("CSV log path", value="comparison_results.csv", icon=":material/description:")
-        base_name = st.text_input("Export basename", value="model", icon=":material/drive_file_rename_outline:")
+        csv_file_path = st.text_input(
+            "CSV log path",
+            value="comparison_results.csv",
+            icon=":material/description:",
+        )
+        base_name = st.text_input(
+            "Export basename",
+            value="model",
+            icon=":material/drive_file_rename_outline:",
+        )
         st.space("small")
         render_preview_cache_controls()
         st.space("small")
@@ -405,58 +540,141 @@ def render_builder() -> None:
 
     if active_tab == ":material/construction: 1. Recipe and sweep":
         with st.container(border=True):
-            st.markdown("#### :material/tune: Configure sweep parameters")
-            filler_options = list(st.session_state.filler_params_dict.keys())
-            st.pills(
-                "Filler type",
-                filler_options,
-                key="sweep_f_type",
-                on_change=on_filler_type_change,
+            with st.container(
+                horizontal=True,
+                horizontal_alignment="distribute",
+                vertical_alignment="center",
+            ):
+                st.markdown("#### :material/tune: Configure sweep parameters")
+                st.button(
+                    "Add filler",
+                    icon=":material/add:",
+                    type="tertiary",
+                    on_click=add_filler_stage,
+                )
+
+            st.caption(
+                "Each filler stage is added to the same model. "
+                "Volume-fraction sweeps are expanded as combinations; "
+                "stretch and random seed are shared."
             )
 
-            param_col, prop_col = st.columns([3, 1])
-            with param_col:
-                input_col, reset_col = st.columns([6, 1])
-                input_col.text_input(
-                    "Parameters",
-                    key="sweep_params",
-                    on_change=on_params_change,
-                    help="Colon-separated key=value pairs for the selected filler.",
-                )
-                reset_col.button(
-                    "Default",
-                    key="reset_sweep_params",
-                    icon=":material/undo:",
-                    type="tertiary",
-                    width="content",
-                    on_click=reset_current_params,
-                    help="Reset the selected filler's parameters.",
-                )
-            with prop_col:
-                st.text_input(
-                    "Filler prop",
-                    key="sweep_filler_prop",
-                    help="Optional recipe prop override. Spaces are converted to underscores.",
-                )
+            filler_options = list(DEFAULT_FILLER_PARAMS.keys())
+            stage_ids = [int(value) for value in st.session_state.filler_stage_ids]
+            for stage_number, stage_id in enumerate(stage_ids, start=1):
+                with st.container(border=True):
+                    with st.container(
+                        horizontal=True,
+                        horizontal_alignment="distribute",
+                        vertical_alignment="center",
+                    ):
+                        st.markdown(f"**Filler stage {stage_number}**")
+                        st.button(
+                            "Remove",
+                            key=f"remove_stage_{stage_id}",
+                            icon=":material/close:",
+                            type="tertiary",
+                            width="content",
+                            disabled=len(stage_ids) <= 1,
+                            on_click=remove_filler_stage,
+                            args=(stage_id,),
+                        )
 
-            vf_col, stretch_col, seed_col = st.columns(3)
-            with vf_col:
-                st.markdown("**Volume fraction Vf**")
-                c1, c2, c3 = st.columns(3)
-                c1.number_input("Min", value=0.05, step=0.01, key="sweep_vf_min", format="%.3f")
-                c2.number_input("Max", value=0.05, step=0.01, key="sweep_vf_max", format="%.3f")
-                c3.number_input("Steps", value=1, step=1, min_value=1, key="sweep_vf_steps")
+                    st.pills(
+                        "Filler type",
+                        filler_options,
+                        key=stage_key(stage_id, "type"),
+                        on_change=on_stage_filler_type_change,
+                        args=(stage_id,),
+                    )
+
+                    input_col, reset_col = st.columns([6, 1])
+                    input_col.text_input(
+                        "Parameters",
+                        key=stage_key(stage_id, "params"),
+                        help=(
+                            "Colon-separated key=value pairs. Add prop=... here "
+                            "to override the sidebar default for this filler stage."
+                        ),
+                    )
+                    reset_col.button(
+                        "Default",
+                        key=f"reset_stage_params_{stage_id}",
+                        icon=":material/undo:",
+                        type="tertiary",
+                        width="content",
+                        on_click=reset_stage_params,
+                        args=(stage_id,),
+                        help="Reset this stage's filler parameters.",
+                    )
+
+                    st.markdown("**Volume fraction Vf**")
+                    c1, c2, c3 = st.columns(3)
+                    c1.number_input(
+                        "Min",
+                        value=0.05,
+                        step=0.01,
+                        key=stage_key(stage_id, "vf_min"),
+                        format="%.3f",
+                    )
+                    c2.number_input(
+                        "Max",
+                        value=0.05,
+                        step=0.01,
+                        key=stage_key(stage_id, "vf_max"),
+                        format="%.3f",
+                    )
+                    c3.number_input(
+                        "Steps",
+                        value=1,
+                        step=1,
+                        min_value=1,
+                        key=stage_key(stage_id, "vf_steps"),
+                    )
+
+            st.divider()
+            stretch_col, seed_col = st.columns(2)
             with stretch_col:
-                st.markdown("**Stretch ratio**")
+                st.markdown("**Shared stretch ratio**")
                 c4, c5, c6 = st.columns(3)
-                c4.number_input("Min", value=1.0, step=0.1, key="sweep_s_min", format="%.2f")
-                c5.number_input("Max", value=1.0, step=0.1, key="sweep_s_max", format="%.2f")
-                c6.number_input("Steps", value=1, step=1, min_value=1, key="sweep_s_steps")
+                c4.number_input(
+                    "Min",
+                    value=1.0,
+                    step=0.1,
+                    key="sweep_s_min",
+                    format="%.2f",
+                )
+                c5.number_input(
+                    "Max",
+                    value=1.0,
+                    step=0.1,
+                    key="sweep_s_max",
+                    format="%.2f",
+                )
+                c6.number_input(
+                    "Steps",
+                    value=1,
+                    step=1,
+                    min_value=1,
+                    key="sweep_s_steps",
+                )
             with seed_col:
-                st.markdown("**Random seed**")
+                st.markdown("**Shared random seed**")
                 c7, c8 = st.columns(2)
-                c7.number_input("Start", value=-1, step=1, key="sweep_seed_start", help="-1 uses random seeds")
-                c8.number_input("Count", value=1, step=1, min_value=1, key="sweep_seed_count")
+                c7.number_input(
+                    "Start",
+                    value=-1,
+                    step=1,
+                    key="sweep_seed_start",
+                    help="-1 uses random seeds",
+                )
+                c8.number_input(
+                    "Count",
+                    value=1,
+                    step=1,
+                    min_value=1,
+                    key="sweep_seed_count",
+                )
 
             with st.container(horizontal=True, horizontal_alignment="right"):
                 st.button(
@@ -469,13 +687,20 @@ def render_builder() -> None:
                 st.info(st.session_state.last_queue_message, icon=":material/info:")
 
         st.space("small")
-        with st.container(horizontal=True, horizontal_alignment="distribute", vertical_alignment="center"):
+        with st.container(
+            horizontal=True,
+            horizontal_alignment="distribute",
+            vertical_alignment="center",
+        ):
             st.markdown("#### :material/format_list_bulleted: Simulation queue")
             st.button("Clear queue", icon=":material/delete_sweep:", on_click=clear_queue)
 
         queue_df = st.session_state.recipe_queue.copy()
         if queue_df.empty:
-            st.info("Add a sweep recipe to create simulation steps.", icon=":material/info:")
+            st.info(
+                "Add a sweep recipe to create simulation steps.",
+                icon=":material/info:",
+            )
         else:
             render_queue_metrics(queue_df)
 
@@ -486,14 +711,28 @@ def render_builder() -> None:
             hide_index=True,
             disabled=["Status"],
             column_config={
-                "Recipe": st.column_config.TextColumn("Microstructure recipe", width="large"),
-                "Stretch": st.column_config.NumberColumn("Stretch", format="%.2f", width="small"),
-                "Seed": st.column_config.NumberColumn("Seed", format="%d", width="small", help="-1 uses random seeds"),
+                "Recipe": st.column_config.TextColumn(
+                    "Microstructure recipe",
+                    width="large",
+                ),
+                "Stretch": st.column_config.NumberColumn(
+                    "Stretch",
+                    format="%.2f",
+                    width="small",
+                ),
+                "Seed": st.column_config.NumberColumn(
+                    "Seed",
+                    format="%d",
+                    width="small",
+                    help="-1 uses random seeds",
+                ),
                 "Status": st.column_config.TextColumn("Status", width="small"),
             },
             height=320,
         )
-        if isinstance(edited_queue, pd.DataFrame) and not edited_queue.equals(st.session_state.recipe_queue):
+        if isinstance(edited_queue, pd.DataFrame) and not edited_queue.equals(
+            st.session_state.recipe_queue
+        ):
             st.session_state.recipe_queue = edited_queue.reindex(columns=QUEUE_COLUMNS)
 
     elif active_tab == ":material/visibility: 2. Execute and preview":
@@ -514,19 +753,38 @@ def render_builder() -> None:
                     queue_placeholder = st.empty()
                     log_placeholder = st.empty()
                     with st.container(horizontal=True):
-                        if st.button("Stage preview", type="secondary", icon=":material/visibility:"):
+                        if st.button(
+                            "Stage preview",
+                            type="secondary",
+                            icon=":material/visibility:",
+                        ):
                             st.session_state.active_preview = selected_label
                             st.rerun()
 
-                        if st.button("Run selected step", type="primary", icon=":material/play_arrow:"):
+                        if st.button(
+                            "Run selected step",
+                            type="primary",
+                            icon=":material/play_arrow:",
+                        ):
                             row = st.session_state.recipe_queue.iloc[target_idx]
-                            hash_text = f"{row['Recipe']}_{row['Stretch']}_{row['Seed']}_{grid_size}"
+                            hash_text = (
+                                f"{row['Recipe']}_{row['Stretch']}_"
+                                f"{row['Seed']}_{grid_size}"
+                            )
                             hash_str = hashlib.md5(hash_text.encode()).hexdigest()[:8]
                             enforce_preview_cache_limits()
                             ensure_project_dir(CACHE_DIR_NAME)
-                            out_base = os.path.join(CACHE_DIR_NAME, f"{base_name}_{hash_str}")
-                            st.session_state.recipe_queue.at[target_idx, "Status"] = STATUS_RUNNING
-                            queue_placeholder.dataframe(st.session_state.recipe_queue, hide_index=True)
+                            out_base = os.path.join(
+                                CACHE_DIR_NAME,
+                                f"{base_name}_{hash_str}",
+                            )
+                            st.session_state.recipe_queue.at[target_idx, "Status"] = (
+                                STATUS_RUNNING
+                            )
+                            queue_placeholder.dataframe(
+                                st.session_state.recipe_queue,
+                                hide_index=True,
+                            )
                             res = run_cli_for_step(
                                 row["Recipe"],
                                 float(row["Stretch"]),
@@ -556,24 +814,45 @@ def render_builder() -> None:
                                 skip_structure_metrics=bool(skip_structure_metrics),
                                 advanced_metrics=bool(advanced_metrics),
                             )
-                            st.session_state.execution_logs[target_idx] = clean_console_log(res.stdout)
+                            st.session_state.execution_logs[target_idx] = (
+                                clean_console_log(res.stdout)
+                            )
                             st.session_state.recipe_queue.at[target_idx, "Status"] = (
-                                STATUS_COMPLETED if res.returncode == 0 else STATUS_ERROR
+                                STATUS_COMPLETED
+                                if res.returncode == 0
+                                else STATUS_ERROR
                             )
                             queue_placeholder.empty()
                             st.rerun()
 
-                        if st.button("Run all pending steps", type="secondary", icon=":material/fast_forward:"):
+                        if st.button(
+                            "Run all pending steps",
+                            type="secondary",
+                            icon=":material/fast_forward:",
+                        ):
                             for idx, row in st.session_state.recipe_queue.iterrows():
                                 if row["Status"] == STATUS_COMPLETED:
                                     continue
-                                st.session_state.recipe_queue.at[idx, "Status"] = STATUS_RUNNING
-                                queue_placeholder.dataframe(st.session_state.recipe_queue, hide_index=True)
-                                hash_text = f"{row['Recipe']}_{row['Stretch']}_{row['Seed']}_{grid_size}"
-                                hash_str = hashlib.md5(hash_text.encode()).hexdigest()[:8]
+                                st.session_state.recipe_queue.at[idx, "Status"] = (
+                                    STATUS_RUNNING
+                                )
+                                queue_placeholder.dataframe(
+                                    st.session_state.recipe_queue,
+                                    hide_index=True,
+                                )
+                                hash_text = (
+                                    f"{row['Recipe']}_{row['Stretch']}_"
+                                    f"{row['Seed']}_{grid_size}"
+                                )
+                                hash_str = hashlib.md5(
+                                    hash_text.encode()
+                                ).hexdigest()[:8]
                                 enforce_preview_cache_limits()
                                 ensure_project_dir(CACHE_DIR_NAME)
-                                out_base = os.path.join(CACHE_DIR_NAME, f"{base_name}_{hash_str}")
+                                out_base = os.path.join(
+                                    CACHE_DIR_NAME,
+                                    f"{base_name}_{hash_str}",
+                                )
                                 res = run_cli_for_step(
                                     row["Recipe"],
                                     float(row["Stretch"]),
@@ -603,9 +882,13 @@ def render_builder() -> None:
                                     skip_structure_metrics=bool(skip_structure_metrics),
                                     advanced_metrics=bool(advanced_metrics),
                                 )
-                                st.session_state.execution_logs[idx] = clean_console_log(res.stdout)
+                                st.session_state.execution_logs[idx] = clean_console_log(
+                                    res.stdout
+                                )
                                 st.session_state.recipe_queue.at[idx, "Status"] = (
-                                    STATUS_COMPLETED if res.returncode == 0 else STATUS_ERROR
+                                    STATUS_COMPLETED
+                                    if res.returncode == 0
+                                    else STATUS_ERROR
                                 )
                                 if res.returncode != 0:
                                     break
@@ -613,7 +896,11 @@ def render_builder() -> None:
                             st.rerun()
 
                         if target_idx in st.session_state.execution_logs:
-                            st.button("Clear logs", icon=":material/clear_all:", on_click=clear_log)
+                            st.button(
+                                "Clear logs",
+                                icon=":material/clear_all:",
+                                on_click=clear_log,
+                            )
 
                     if target_idx in st.session_state.execution_logs:
                         with log_placeholder.expander(
@@ -650,7 +937,10 @@ def render_builder() -> None:
                 raw_path = resolve_project_path(raw_file)
 
                 with st.container(border=True):
-                    st.markdown(f"### :material/analytics: Visualization: {st.session_state.active_preview}")
+                    st.markdown(
+                        "### :material/analytics: "
+                        f"Visualization: {st.session_state.active_preview}"
+                    )
                     if not raw_path.exists():
                         st.info(
                             "No geometry binary found for this step. Run the step first.",
@@ -712,17 +1002,32 @@ def render_builder() -> None:
         with st.container(border=True):
             st.markdown("### :material/insert_chart: Results dashboard")
             st.caption("Inspect the CSV log and build a standalone HTML report.")
-            if st.button("Generate or refresh HTML report", type="primary", icon=":material/refresh:"):
+            if st.button(
+                "Generate or refresh HTML report",
+                type="primary",
+                icon=":material/refresh:",
+            ):
                 if resolve_project_path(csv_file_path).exists():
                     with st.spinner("Rendering HTML report components..."):
                         res = run_project_command(
-                            [sys.executable, "render_results_dashboard.py", "--csv", csv_file_path]
+                            [
+                                sys.executable,
+                                "render_results_dashboard.py",
+                                "--csv",
+                                csv_file_path,
+                            ]
                         )
                     if res.returncode == 0:
-                        st.success("Dashboard static build complete.", icon=":material/check_circle:")
+                        st.success(
+                            "Dashboard static build complete.",
+                            icon=":material/check_circle:",
+                        )
                     else:
                         st.error("Dashboard renderer failed.", icon=":material/error:")
-                    with st.expander("Renderer output log", icon=":material/terminal:"):
+                    with st.expander(
+                        "Renderer output log",
+                        icon=":material/terminal:",
+                    ):
                         st.code(clean_console_log(res.stdout))
                 else:
                     st.error("Target CSV log file not found.")
