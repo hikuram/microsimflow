@@ -24,7 +24,7 @@ from micro_builder import (
 from micro_builder.postprocess import compute_advanced_metrics 
 
 from pipeline.io_csv import structure_metrics_to_csv_fields, parse_chfem_log
-from pipeline.solver_puma import run_puma_elasticity, run_puma_laplace
+from pipeline.solver_puma import run_puma_elasticity, run_puma_laplace, run_puma_permeability
 from pipeline.viz_export import save_thumbnail_png
 
 def parse_args():
@@ -41,9 +41,11 @@ def parse_args():
     parser.add_argument("--pbc_pad", type=int, default=20, help="Padding voxels for PBC-aware morphology metrics")
     
     # Property override arguments (consistent with run_pipeline.py)
-    parser.add_argument("--prop_A", type=str, default=None, help="Property for Polymer (Phase 0/1)")
+    parser.add_argument("--prop_A", type=str, default=None, help="Property for Polymer A (Phase 0)")
+    parser.add_argument("--prop_B", type=str, default=None, help="Property for Polymer B (Phase 1)")
     parser.add_argument("--prop_inter2", type=str, default=None, help="Property for Secondary Interface (Phase 2)")
     parser.add_argument("--prop_inter", type=str, default=None, help="Property for Primary Interface (Phase 3)")
+    parser.add_argument("--prop_filler", type=str, default=None, help="Property for Filler (Phase 4 and above)")
     return parser.parse_args()
 
 def main():
@@ -79,22 +81,22 @@ def main():
     # Default values follow run_pipeline.py logic
     if args.physics_mode == 'mechanics':
         prop_A = args.prop_A or "1.0 0.35"
-        prop_B = prop_A
+        prop_B = args.prop_B or prop_A
         prop_secondary_inter = args.prop_inter2 or "10.0 0.30"
         prop_primary_inter = args.prop_inter or "100.0 0.25"
-        default_filler = "1000.0 0.20"
+        default_filler = args.prop_filler or "1000.0 0.20"
     elif args.physics_mode == 'electrical':
         prop_A = args.prop_A or "1e-4"
-        prop_B = prop_A
+        prop_B = args.prop_B or prop_A
         prop_secondary_inter = args.prop_inter2 or "1e-3"
         prop_primary_inter = args.prop_inter or "1e-1"
-        default_filler = "1e4"
+        default_filler = args.prop_filler or "1e4"
     else: # Default: thermal
         prop_A = args.prop_A or "0.3"
-        prop_B = prop_A
+        prop_B = args.prop_B or prop_A
         prop_secondary_inter = args.prop_inter2 or "3.0"
         prop_primary_inter = args.prop_inter or "30.0"
-        default_filler = "300.0"
+        default_filler = args.prop_filler or "300.0"
 
     prop_map = {
         0: prop_A, 1: prop_B, 
