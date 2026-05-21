@@ -61,6 +61,8 @@ def parse_args():
                         choices=["single", "gyroid", "sea_island", "island_sea", "lamellar", "cylinder", "bcc"],
                         help="Type of continuous polymer background phase (default: gyroid).")
     parser.add_argument("--phaseA_ratio", type=float, default=0.50, help="Target volume fraction for Phase A in the background (default: 0.50).")
+    parser.add_argument("--feature_size", type=float, default=10.0, help="Characteristic length (wavelength for TPMS, radius for Islands). Default: 10.0")
+    parser.add_argument("--diffusion_factor", type=float, default=0.0, help="Mutual diffusion factor for background phases (0.0 = sharp).")
 
     group = parser.add_mutually_exclusive_group(required=True)
     
@@ -181,20 +183,20 @@ def main():
     # 1. Branch for background generation
     t0 = time.time()
     if args.bg_type == "single":
-        _, tpms_grid, _, actual_phaseA = build_single_phase_grid(args.size)
+        _, tpms_grid, _, actual_phaseA = build_single_phase_grid(args.size, feature_size=args.feature_size, diffusion_factor=args.diffusion_factor)
     elif args.bg_type == "lamellar":
-        _, tpms_grid, _, actual_phaseA = build_lamellar_grid(args.size, wavelength=10, target_phaseA_ratio=args.phaseA_ratio)
+        _, tpms_grid, _, actual_phaseA = build_lamellar_grid(args.size, feature_size=args.feature_size, target_phaseA_ratio=args.phaseA_ratio, diffusion_factor=args.diffusion_factor)
     elif args.bg_type == "cylinder":
-        _, tpms_grid, _, actual_phaseA = build_cylinder_hex_grid(args.size, wavelength=15, target_phaseA_ratio=args.phaseA_ratio)
+        _, tpms_grid, _, actual_phaseA = build_cylinder_hex_grid(args.size, feature_size=args.feature_size, target_phaseA_ratio=args.phaseA_ratio, diffusion_factor=args.diffusion_factor)
     elif args.bg_type == "bcc":
-        _, tpms_grid, _, actual_phaseA = build_bcc_grid(args.size, wavelength=15, target_phaseA_ratio=args.phaseA_ratio)
+        _, tpms_grid, _, actual_phaseA = build_bcc_grid(args.size, feature_size=args.feature_size, target_phaseA_ratio=args.phaseA_ratio, diffusion_factor=args.diffusion_factor)
     elif args.bg_type == "sea_island":
-        _, tpms_grid, _, actual_phaseA = build_sea_island_grid(args.size, island_radius=8, target_phaseA_ratio=args.phaseA_ratio)
+        _, tpms_grid, _, actual_phaseA = build_sea_island_grid(args.size, feature_size=args.feature_size, target_phaseA_ratio=args.phaseA_ratio, diffusion_factor=args.diffusion_factor)
     elif args.bg_type == "island_sea":
-        _, tpms_grid, _, actual_phaseA = build_island_sea_grid(args.size, island_radius=8, target_phaseA_ratio=args.phaseA_ratio)
+        _, tpms_grid, _, actual_phaseA = build_island_sea_grid(args.size, feature_size=args.feature_size, target_phaseA_ratio=args.phaseA_ratio, diffusion_factor=args.diffusion_factor)
     else:
         # Gyroid
-        _, tpms_grid, _, actual_phaseA = build_tpms_grid_with_target_ratio(args.size, wavelength=10, target_phaseA_ratio=args.phaseA_ratio)
+        _, tpms_grid, _, actual_phaseA = build_tpms_grid_with_target_ratio(args.size, feature_size=args.feature_size, target_phaseA_ratio=args.phaseA_ratio, diffusion_factor=args.diffusion_factor)
         
     # Initialize comp_grid with unsigned 8-bit integer for memory efficiency
     comp_grid = np.zeros((args.size, args.size, args.size), dtype=np.uint8)
