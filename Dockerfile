@@ -43,6 +43,7 @@ RUN micromamba install -y -n base -c conda-forge \
     tqdm \
     matplotlib \
     seaborn \
+    plotly \
     pandas \
     pyvista \
     pillow \
