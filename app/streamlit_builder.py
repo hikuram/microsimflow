@@ -66,6 +66,15 @@ DEFAULT_FILLER_PROP_BY_MODE = {
     "permeability": "1000.0_0.20",
 }
 
+SUGGESTED_PARAMS_BY_TYPE = {
+    "rigidfiber": ["length", "radius", "mean_dir", "kappa", "protrusion_coef", "prop"],
+    "flexfiber": ["length", "radius", "max_bend_deg", "max_total_bends", "protrusion_coef", "prop"],
+    "flake": ["radius", "thickness", "mean_dir", "kappa", "protrusion_coef", "prop"],
+    "sphere": ["radius", "protrusion_coef", "prop"],
+    "irregfiber": ["length", "shape", "radius", "ratio", "mean_dir", "kappa", "prop"],
+    "agglomerate": ["num_fibers", "length", "radius", "max_bend_deg", "prop"],
+    "staggered": ["radius", "layer_thickness", "min_layers", "max_layers", "max_offset_pct", "mean_dir", "kappa", "prop"],
+}
 
 def stage_key(stage_id: int, name: str) -> str:
     return f"filler_stage_{stage_id}_{name}"
@@ -145,6 +154,15 @@ def reset_stage_params(stage_id: int) -> None:
     params_key = stage_key(stage_id, "params")
     filler_type = st.session_state.get(type_key) or "rigidfiber"
     st.session_state[params_key] = DEFAULT_FILLER_PARAMS.get(filler_type, "")
+
+
+def append_param_to_recipe(stage_id: int, param_name: str) -> None:
+    params_key = stage_key(stage_id, "params")
+    current_val = st.session_state.get(params_key, "").strip()
+    if current_val and not current_val.endswith(":"):
+        st.session_state[params_key] = f"{current_val}:{param_name}="
+    else:
+        st.session_state[params_key] = f"{current_val}{param_name}="
 
 
 def normalize_prop_value(value: str) -> str:
@@ -298,6 +316,8 @@ def run_cli_for_step(
     voxel_size: float,
     bg_type: str,
     phase_a_ratio: float,
+    feature_size: float,
+    diffusion_factor: float,
     physics_mode: str,
     solver: str,
     csv_file_path: str,
@@ -330,6 +350,10 @@ def run_cli_for_step(
         bg_type,
         "--phaseA_ratio",
         str(phase_a_ratio),
+        "--feature_size",
+        str(feature_size),
+        "--diffusion_factor",
+        str(diffusion_factor),
         "--physics_mode",
         physics_mode,
         "--solver",
@@ -416,6 +440,24 @@ def render_builder() -> None:
                 default="gyroid",
             )
             phase_a_ratio = st.slider("Background ratio A", 0.1, 0.9, 0.5)
+
+            feat_col, diff_col = st.columns(2)
+            feature_size = feat_col.number_input(
+                "Feature size (px)",
+                value=10.0,
+                min_value=1.0,
+                step=1.0,
+                help="Wavelength for TPMS, Radius for Islands"
+            )
+            diffusion_factor = diff_col.number_input(
+                "Diffusion factor",
+                value=0.0,
+                min_value=0.0,
+                max_value=2.0,
+                step=0.1,
+                format="%.2f",
+                help="0.0 = Sharp interface. >0 = Mutual diffusion"
+            )
 
         st.space("small")
         st.markdown("### :material/science: Solver and physics")
@@ -588,6 +630,8 @@ def render_builder() -> None:
                         args=(stage_id,),
                     )
 
+                    filler_type = st.session_state.get(stage_key(stage_id, "type")) or "rigidfiber"
+
                     input_col, reset_col = st.columns([6, 1])
                     input_col.text_input(
                         "Parameters",
@@ -607,6 +651,18 @@ def render_builder() -> None:
                         args=(stage_id,),
                         help="Reset this stage's filler parameters.",
                     )
+
+                    suggestions = SUGGESTED_PARAMS_BY_TYPE.get(filler_type, ["prop"])
+                    st.caption("Quick add parameter keys:")
+                    cols = st.columns(len(suggestions) + 2)
+                    for i, param_name in enumerate(suggestions):
+                        cols[i].button(
+                            f"+ {param_name}",
+                            key=f"add_{param_name}_{stage_id}",
+                            type="secondary",
+                            on_click=append_param_to_recipe,
+                            args=(stage_id, param_name)
+                        )
 
                     st.markdown("**Volume fraction Vf**")
                     c1, c2, c3 = st.columns(3)
@@ -794,6 +850,8 @@ def render_builder() -> None:
                                 voxel_size=float(voxel_size),
                                 bg_type=bg_type,
                                 phase_a_ratio=float(phase_a_ratio),
+                                feature_size=float(feature_size),
+                                diffusion_factor=float(diffusion_factor),
                                 physics_mode=physics_mode,
                                 solver=solver,
                                 csv_file_path=csv_file_path,
@@ -862,6 +920,8 @@ def render_builder() -> None:
                                     voxel_size=float(voxel_size),
                                     bg_type=bg_type,
                                     phase_a_ratio=float(phase_a_ratio),
+                                    feature_size=float(feature_size),
+                                    diffusion_factor=float(diffusion_factor),
                                     physics_mode=physics_mode,
                                     solver=solver,
                                     csv_file_path=csv_file_path,
@@ -972,18 +1032,17 @@ def render_builder() -> None:
                             st.markdown("**2D voxel slice explorer**")
                             z_slice = st.slider("Z-axis slice", 0, nz - 1, nz // 2)
                             color_scale = [
-                                [0, "#1f2937"],
-                                [0.2, "#1f2937"],
-                                [0.2, "#4b5563"],
-                                [0.4, "#4b5563"],
-                                [0.4, "#f59e0b"],
-                                [0.8, "#f59e0b"],
-                                [0.8, "#3b82f6"],
-                                [1, "#3b82f6"],
+                                [0.0, "#440154"], [0.2, "#440154"],   # Polymer A (ID: 0)
+                                [0.2, "#31688e"], [0.4, "#31688e"],   # Polymer B (ID: 1)
+                                [0.4, "#21918c"], [0.6, "#21918c"],   # Secondary Interface (ID: 2)
+                                [0.6, "#85d44a"], [0.8, "#85d44a"],   # Primary Interface (ID: 3)
+                                [0.8, "#fde725"], [1.0, "#fde725"],   # Fillers (ID: 4+)
                             ]
                             fig_2d = px.imshow(
                                 final_grid[z_slice, :, :],
                                 color_continuous_scale=color_scale,
+                                zmin=-0.5,
+                                zmax=4.5,
                                 origin="lower",
                             )
                             fig_2d.update_layout(
