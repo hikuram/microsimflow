@@ -713,7 +713,7 @@ def render_builder() -> None:
                     suggestions = SUGGESTED_PARAMS_BY_TYPE.get(filler_type, ["prop"])
                     add_col, select_col = st.columns([1, 5])
                     add_col.button(
-                        "+ Add",
+                        "+ Add key",
                         key=f"add_stage_param_{stage_id}",
                         type="secondary",
                         width="stretch",
