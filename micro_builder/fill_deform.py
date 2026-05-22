@@ -1156,7 +1156,7 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
 # F. Affine Deformation & Rendering Module
 # =========================================================
 
-def apply_background_deformation(grid, stretch_ratio=1.0, poisson_ratio=0.4):
+def apply_background_deformation(grid, stretch_ratio=1.0, poisson_ratio=0.4, stretch_axis='X'):
     """Applies affine deformation ONLY to the continuous polymer background."""
     if stretch_ratio == 1.0:
         return grid.copy()
@@ -1164,25 +1164,41 @@ def apply_background_deformation(grid, stretch_ratio=1.0, poisson_ratio=0.4):
     lam = stretch_ratio
     lam_nu = lam ** (-poisson_ratio)
     nz, ny, nx = grid.shape
-    new_shape = (
-        max(1, int(round(nz * lam_nu))),
-        max(1, int(round(ny * lam_nu))),
-        max(1, int(round(nx * lam)))
-    )
-    matrix = np.array([
-        [1.0 / lam_nu, 0.0, 0.0],
-        [0.0, 1.0 / lam_nu, 0.0],
-        [0.0, 0.0, 1.0 / lam]
-    ])
+    
+    if stretch_axis == 'X':
+        F_diag = [lam_nu, lam_nu, lam]
+        new_shape = (
+            max(1, int(round(nz * lam_nu))),
+            max(1, int(round(ny * lam_nu))),
+            max(1, int(round(nx * lam)))
+        )
+    elif stretch_axis == 'Y':
+        F_diag = [lam_nu, lam, lam_nu]
+        new_shape = (
+            max(1, int(round(nz * lam_nu))),
+            max(1, int(round(ny * lam))),
+            max(1, int(round(nx * lam_nu)))
+        )
+    elif stretch_axis == 'Z':
+        F_diag = [lam, lam_nu, lam_nu]
+        new_shape = (
+            max(1, int(round(nz * lam))),
+            max(1, int(round(ny * lam_nu))),
+            max(1, int(round(nx * lam_nu)))
+        )
+    else:
+        raise ValueError(f"Invalid stretch_axis: {stretch_axis}. Must be X, Y, or Z.")
+
+    matrix = np.diag([1.0 / F_diag[0], 1.0 / F_diag[1], 1.0 / F_diag[2]])
     return affine_transform(grid, matrix=matrix, output_shape=new_shape, order=0, mode='wrap')
 
-def _transform_fiber_kinematics(local_bb, lam, lam_nu):
+def _transform_fiber_kinematics(local_bb, F_diag):
     """Calculates rigid-body transformation of an inextensible fiber backbone"""
     diffs = np.diff(local_bb, axis=0)
     diffs_def = np.zeros_like(diffs, dtype=float)
-    diffs_def[:, 0] = diffs[:, 0] * lam_nu
-    diffs_def[:, 1] = diffs[:, 1] * lam_nu
-    diffs_def[:, 2] = diffs[:, 2] * lam
+    diffs_def[:, 0] = diffs[:, 0] * F_diag[0]
+    diffs_def[:, 1] = diffs[:, 1] * F_diag[1]
+    diffs_def[:, 2] = diffs[:, 2] * F_diag[2]
 
     orig_lens = np.linalg.norm(diffs, axis=1)
     def_lens = np.linalg.norm(diffs_def, axis=1)
@@ -1191,7 +1207,7 @@ def _transform_fiber_kinematics(local_bb, lam, lam_nu):
 
     new_bb = np.zeros((len(local_bb), 3), dtype=float)
     new_bb[1:] = np.cumsum(diffs_def, axis=0)
-    start_anchor = local_bb[0] * np.array([lam_nu, lam_nu, lam])
+    start_anchor = local_bb[0] * np.array(F_diag)
     new_bb += (start_anchor - new_bb[0])
     return new_bb
 
@@ -1392,9 +1408,8 @@ def _get_deformed_main_axis(geom, F_mat):
         return R_pure_local_to_global @ np.array([0.0, 0.0, 1.0])
 
     if base_type == 'fiber':
-        lam = F_mat[2, 2]
-        lam_nu = F_mat[0, 0]
-        new_rel_bb = _transform_fiber_kinematics(np.array(local_kinematics), lam, lam_nu)
+        F_diag = [F_mat[0, 0], F_mat[1, 1], F_mat[2, 2]]
+        new_rel_bb = _transform_fiber_kinematics(np.array(local_kinematics), F_diag)
         if len(new_rel_bb) >= 2:
             axis = new_rel_bb[-1] - new_rel_bb[0]
             if np.linalg.norm(axis) > 1e-12:
@@ -1402,11 +1417,10 @@ def _get_deformed_main_axis(geom, F_mat):
         return _pca_main_axis(new_rel_bb)
 
     if base_type == 'agglomerate':
-        lam = F_mat[2, 2]
-        lam_nu = F_mat[0, 0]
+        F_diag = [F_mat[0, 0], F_mat[1, 1], F_mat[2, 2]]
         all_pts = []
         for bb in local_kinematics:
-            new_rel_bb = _transform_fiber_kinematics(np.array(bb), lam, lam_nu)
+            new_rel_bb = _transform_fiber_kinematics(np.array(bb), F_diag)
             all_pts.append(new_rel_bb)
         return _pca_main_axis(np.vstack(all_pts))
 
@@ -1426,7 +1440,6 @@ def _build_kinematic_mask(F_mat, geom, tilt_rotation=None):
         tilt_rotation = np.eye(3)
 
     if base_type in ['flake', 'staggered', 'irregular_fiber']:
-        # Apply pure rigid-body rotation (Polar Decomposition) without the hacky transpose
         R_local_to_global = np.array(R_orig)
         R_pure_local_to_global, _ = polar(F_mat @ R_local_to_global)
         R_pure_local_to_global = tilt_rotation @ R_pure_local_to_global
@@ -1434,7 +1447,6 @@ def _build_kinematic_mask(F_mat, geom, tilt_rotation=None):
         loc_pts = np.array(local_kinematics)
         new_rel_global_centers = (R_pure_local_to_global @ loc_pts.T).T
 
-        # Dynamic bounding box based on transformed geometry
         if base_type == 'irregular_fiber':
             effective_radius = geom['length'] / 2.0 + radius
         else:
@@ -1451,7 +1463,6 @@ def _build_kinematic_mask(F_mat, geom, tilt_rotation=None):
         R_global_to_local = R_pure_local_to_global.T
         coords_local = R_global_to_local @ coords_global_shifted
 
-        # Assign coords_local[2] to Z_loc to match the primary axis in local space
         X_loc = coords_local[0,:].reshape(box_shape)
         Y_loc = coords_local[1,:].reshape(box_shape)
         Z_loc = coords_local[2,:].reshape(box_shape)
@@ -1467,7 +1478,6 @@ def _build_kinematic_mask(F_mat, geom, tilt_rotation=None):
             z_c, y_c, x_c = local_kinematics[0]
             mask |= ((X_loc - x_c)**2 + (Y_loc - y_c)**2 <= radius**2) & (np.abs(Z_loc - z_c) <= thickness / 2.0)
 
-        # --- Render mathematical Boolean masks for Irregular Fibers ---
         elif base_type == 'irregular_fiber':
             length = geom['length']
             shape_type = geom['shape_type']
@@ -1487,7 +1497,6 @@ def _build_kinematic_mask(F_mat, geom, tilt_rotation=None):
 
             elif shape_type == 'bean':
                 r_min = r_max * ratio
-                # Bend the X direction proportionally to the square of Y (Kidney/Bean shape)
                 X_w = X_rel - 0.5 * (Y_rel**2 / r_max)
                 xy_mask = (X_w**2 / r_min**2 + Y_rel**2 / r_max**2 <= 1)
 
@@ -1495,7 +1504,6 @@ def _build_kinematic_mask(F_mat, geom, tilt_rotation=None):
                 r_in = r_max * ratio
                 r2 = X_rel**2 + Y_rel**2
                 angle = np.arctan2(Y_rel, X_rel)
-                # 120-degree opening (cut out +/-60 degrees)
                 xy_mask = (r2 <= r_max**2) & (r2 >= r_in**2) & (np.abs(angle) > np.radians(60))
 
             mask |= (xy_mask & z_mask)
@@ -1508,24 +1516,22 @@ def _build_kinematic_mask(F_mat, geom, tilt_rotation=None):
         c_maxs = coords_nz.max(axis=0)
         cropped = mask[c_mins[0]:c_maxs[0]+1, c_mins[1]:c_maxs[1]+1, c_mins[2]:c_maxs[2]+1]
 
-        # Mathematically reverse-calculate exact paste target coordinates from the dynamic CM
         cm_in_cropped = -min_b - c_mins
         new_offset = cm_in_cropped - (np.array(cropped.shape) // 2)
         return cropped, new_offset
 
     elif base_type in ['fiber', 'agglomerate']:
-        lam = F_mat[2, 2]
-        lam_nu = F_mat[0, 0]
+        F_diag = [F_mat[0, 0], F_mat[1, 1], F_mat[2, 2]]
 
         if base_type == 'fiber':
-            new_rel_bb = _transform_fiber_kinematics(np.array(local_kinematics), lam, lam_nu)
-            new_rel_bb -= np.mean(new_rel_bb, axis=0) # Strictly enforce rigid rotation around CM
+            new_rel_bb = _transform_fiber_kinematics(np.array(local_kinematics), F_diag)
+            new_rel_bb -= np.mean(new_rel_bb, axis=0)
             new_rel_bb = (tilt_rotation @ new_rel_bb.T).T
             bbs_list = [new_rel_bb]
-        else: # agglomerate
+        else: 
             bbs_list = []
             for bb in local_kinematics:
-                new_rel_bb = _transform_fiber_kinematics(np.array(bb), lam, lam_nu)
+                new_rel_bb = _transform_fiber_kinematics(np.array(bb), F_diag)
                 bbs_list.append(new_rel_bb)
             all_pts = np.vstack(bbs_list)
             cm_shift = np.mean(all_pts, axis=0)
@@ -1676,13 +1682,23 @@ def _render_fine_item(comp_grid, shell_count_grid, P_CM_new, F_mat, geom, item,
 
 
 def render_deformed_fillers(placement_registry, base_shape, stretch_ratio, poisson_ratio,
-                            comp_grid, shell_count_grid, tunnel_radius=2,
+                            comp_grid, shell_count_grid, stretch_axis='X', tunnel_radius=2,
                             deformation_mode='fine', fine_volume_tol=0.01,
                             fine_max_tilt_deg=0.5, fine_ledger_cap=0.05):
     """Renders rigid fillers into the deformed configuration."""
     lam = stretch_ratio
     lam_nu = stretch_ratio ** (-poisson_ratio)
-    F_mat = np.diag([lam_nu, lam_nu, lam])
+    
+    if stretch_axis == 'X':
+        F_diag = [lam_nu, lam_nu, lam]
+    elif stretch_axis == 'Y':
+        F_diag = [lam_nu, lam, lam_nu]
+    elif stretch_axis == 'Z':
+        F_diag = [lam, lam_nu, lam_nu]
+    else:
+        raise ValueError(f"Invalid stretch_axis: {stretch_axis}. Must be X, Y, or Z.")
+        
+    F_mat = np.diag(F_diag)
     deformation_mode = str(deformation_mode).lower()
 
     if deformation_mode not in ('coarse', 'fine'):
