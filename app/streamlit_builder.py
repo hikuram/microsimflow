@@ -373,6 +373,7 @@ def run_cli_for_step(
     grid_size: int,
     voxel_size: float,
     bg_type: str,
+    base_rotation: int,
     phase_a_ratio: float,
     feature_size: float,
     diffusion_factor: float,
@@ -388,6 +389,7 @@ def run_cli_for_step(
     tunnel_radius: int,
     contact_radius: int,
     poisson_ratio: float,
+    stretch_axis: str,
     deformation_mode: str,
     fine_volume_tol: float,
     fine_max_tilt_deg: float,
@@ -406,6 +408,8 @@ def run_cli_for_step(
         str(voxel_size),
         "--bg_type",
         bg_type,
+        "--base_rotation",
+        str(base_rotation),
         "--phaseA_ratio",
         str(phase_a_ratio),
         "--feature_size",
@@ -436,6 +440,8 @@ def run_cli_for_step(
         str(tunnel_radius),
         "--contact_radius",
         str(contact_radius),
+        "--stretch_axis",
+        stretch_axis,
         "--poisson_ratio",
         str(poisson_ratio),
         "--deformation_mode",
@@ -497,6 +503,15 @@ def render_builder() -> None:
                 ],
                 default="gyroid",
             )
+            
+            base_rot_label = st.selectbox(
+                "Base rotation",
+                options=["0 (None)", "1 (YZX)", "2 (ZXY)"],
+                index=0,
+                help="Rotates the base background structure before filler placement."
+            )
+            base_rotation = int(base_rot_label.split()[0])
+            
             phase_a_ratio = st.slider("Background ratio A", 0.1, 0.9, 0.5)
 
             feat_col, diff_col = st.columns(2)
@@ -575,6 +590,11 @@ def render_builder() -> None:
 
         with st.expander("Deformation and microstructure", icon=":material/transform:"):
             poisson_ratio = st.number_input("Poisson ratio", value=0.4, step=0.1)
+            stretch_axis = st.segmented_control(
+                "Stretch axis",
+                options=["X", "Y", "Z"],
+                default="X",
+            )
             deformation_mode = st.radio(
                 "Deformation mode",
                 ["fine", "coarse"],
@@ -919,6 +939,7 @@ def render_builder() -> None:
                                 grid_size=int(grid_size),
                                 voxel_size=float(voxel_size),
                                 bg_type=bg_type,
+                                base_rotation=base_rotation,
                                 phase_a_ratio=float(phase_a_ratio),
                                 feature_size=float(feature_size),
                                 diffusion_factor=float(diffusion_factor),
@@ -934,6 +955,7 @@ def render_builder() -> None:
                                 tunnel_radius=int(tunnel_radius),
                                 contact_radius=int(contact_radius),
                                 poisson_ratio=float(poisson_ratio),
+                                stretch_axis=stretch_axis,
                                 deformation_mode=deformation_mode,
                                 fine_volume_tol=float(fine_volume_tol),
                                 fine_max_tilt_deg=float(fine_max_tilt_deg),
@@ -989,6 +1011,7 @@ def render_builder() -> None:
                                     grid_size=int(grid_size),
                                     voxel_size=float(voxel_size),
                                     bg_type=bg_type,
+                                    base_rotation=base_rotation,
                                     phase_a_ratio=float(phase_a_ratio),
                                     feature_size=float(feature_size),
                                     diffusion_factor=float(diffusion_factor),
@@ -1004,6 +1027,7 @@ def render_builder() -> None:
                                     tunnel_radius=int(tunnel_radius),
                                     contact_radius=int(contact_radius),
                                     poisson_ratio=float(poisson_ratio),
+                                    stretch_axis=stretch_axis,
                                     deformation_mode=deformation_mode,
                                     fine_volume_tol=float(fine_volume_tol),
                                     fine_max_tilt_deg=float(fine_max_tilt_deg),
