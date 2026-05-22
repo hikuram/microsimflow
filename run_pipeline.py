@@ -60,6 +60,8 @@ def parse_args():
     parser.add_argument("--bg_type", type=str, default="gyroid",
                         choices=["single", "gyroid", "sea_island", "island_sea", "lamellar", "cylinder", "bcc"],
                         help="Type of continuous polymer background phase (default: gyroid).")
+    parser.add_argument("--base_rotation", type=int, default=0, choices=[0, 1, 2],
+                        help="Background rotation mode before filler placement (0: None, 1: YZX, 2: ZXY). Default: 0.")
     parser.add_argument("--phaseA_ratio", type=float, default=0.50, help="Target volume fraction for Phase A in the background (default: 0.50).")
     parser.add_argument("--feature_size", type=float, default=10.0, help="Characteristic length (wavelength for TPMS, radius for Islands). Default: 10.0")
     parser.add_argument("--diffusion_factor", type=float, default=0.0, help="Mutual diffusion factor for background phases (0.0 = sharp).")
@@ -104,7 +106,9 @@ Example: --recipe "rigidfiber:0.05:length=60:radius=2:prop=500.0" "flake:0.02:ra
     parser.add_argument("--contact_radius", type=int, default=1, 
                         help="Radius in voxels for primary contact interface thickness (default: 1).")
     parser.add_argument("--stretch_ratios", type=float, nargs='+', default=[1.0], 
-                        help="List of stretch ratios (lambda) along X-axis to evaluate deformation (default: 1.0).")
+                        help="List of stretch ratios (lambda) along the specified axis to evaluate deformation (default: 1.0).")
+    parser.add_argument("--stretch_axis", type=str, default="X", choices=["X", "Y", "Z"],
+                        help="Direction of uniaxial stretch (X, Y, or Z). Default: X.")
     parser.add_argument("--poisson_ratio", type=float, default=0.4, 
                         help="Poisson's ratio (nu) for transverse compression during deformation (default: 0.4).")
     parser.add_argument("--deformation_mode", type=str, default="fine", choices=["coarse", "fine"],
@@ -204,6 +208,24 @@ def main():
     # Initialize shell_count_grid unconditionally for ALL modes.
     # In Thermal mode, we will use bitwise operations on this uint8 array to track both overlaps and shells.
     shell_count_grid = np.zeros_like(comp_grid)
+    
+    # -------------------------------------------------------------------------
+    # Background Base Rotation
+    # Apply cyclic permutation to the discrete grid before any fillers are placed.
+    # This maintains the right-handed coordinate system and prevents any
+    # interpolation or shape distortion (jagged edges, volume fraction loss)
+    # that would occur with arbitrary angle rotations.
+    # -------------------------------------------------------------------------
+    if args.base_rotation == 1:
+        # Mode 1: YZX cyclic permutation
+        tpms_grid = np.ascontiguousarray(np.transpose(tpms_grid, axes=(1, 2, 0)))
+        comp_grid = np.ascontiguousarray(np.transpose(comp_grid, axes=(1, 2, 0)))
+        shell_count_grid = np.ascontiguousarray(np.transpose(shell_count_grid, axes=(1, 2, 0)))
+    elif args.base_rotation == 2:
+        # Mode 2: ZXY cyclic permutation
+        tpms_grid = np.ascontiguousarray(np.transpose(tpms_grid, axes=(2, 0, 1)))
+        comp_grid = np.ascontiguousarray(np.transpose(comp_grid, axes=(2, 0, 1)))
+        shell_count_grid = np.ascontiguousarray(np.transpose(shell_count_grid, axes=(2, 0, 1)))
     
     step_logs.append(f"BG({args.bg_type}):{time.time() - t0:.1f}s")
 
@@ -343,7 +365,7 @@ def main():
             current_shell = shell_count_grid.copy()
         else:
             # Deform ONLY the continuous polymer matrix
-            current_tpms = apply_background_deformation(tpms_grid, stretch, args.poisson_ratio)
+            current_tpms = apply_background_deformation(tpms_grid, stretch, args.poisson_ratio, args.stretch_axis)
             
             # Initialize empty spaces for rigid fillers
             current_comp = np.zeros_like(current_tpms)
@@ -353,12 +375,13 @@ def main():
             
             # Redraw all rigid fillers using kinematic transformations
             render_deformed_fillers(
-                placement_registry, 
-                base_shape=(args.size, args.size, args.size), 
-                stretch_ratio=stretch, 
-                poisson_ratio=args.poisson_ratio, 
+                placement_registry,
+                base_shape=(args.size, args.size, args.size),
+                stretch_ratio=stretch,
+                poisson_ratio=args.poisson_ratio,
                 comp_grid=current_comp, 
-                shell_count_grid=current_shell, 
+                shell_count_grid=current_shell,
+                stretch_axis=args.stretch_axis,
                 tunnel_radius=args.tunnel_radius,
                 deformation_mode=args.deformation_mode,
                 fine_volume_tol=args.fine_volume_tol,
@@ -370,9 +393,9 @@ def main():
 
         # 4. Integration of final structure and creation of metadata
         final_grid = finalize_microstructure(
-            current_comp, current_tpms, current_shell, args.physics_mode, 
-            secondary_inter_id=secondary_inter_id, 
-            primary_inter_id=primary_inter_id, 
+            current_comp, current_tpms, current_shell, args.physics_mode,
+            secondary_inter_id=secondary_inter_id,
+            primary_inter_id=primary_inter_id,
             filler_start_id=filler_start_id,
             contact_radius=args.contact_radius
         )
@@ -406,9 +429,12 @@ def main():
             "Grid_Size": f"{final_grid.shape[2]}x{final_grid.shape[1]}x{final_grid.shape[0]}",
             "Voxel_Size_m": str(args.voxel_size),
             "BG_Type": args.bg_type,
+            "Base_Rotation": str(args.base_rotation),
             "Physics_Mode": args.physics_mode,
             "Solver": args.solver,
             "Recipe": " ".join(args.recipe),
+            "Stretch_Ratio": str(stretch),
+            "Stretch_Axis": args.stretch_axis,
             "PolymerA_Frac": f"{phase_stats['polymer_a_fraction']:.4f}",
             "PolymerB_Frac": f"{phase_stats['polymer_b_fraction']:.4f}",
             "Secondary_Inter_Frac": f"{phase_stats['secondary_interface_fraction']:.4f}",
@@ -417,7 +443,6 @@ def main():
             "Contact_Ratio": metric_fields["Contact_Ratio"],
             "Tunneling_Ratio": metric_fields["Tunneling_Ratio"],
             "Connectivity_Ratio": metric_fields["Connectivity_Ratio"],
-            "Stretch_Ratio": str(stretch),
             "Poisson_Ratio": str(args.poisson_ratio) if stretch != 1.0 else "N/A",
         }
         
@@ -594,8 +619,8 @@ def main():
             if not file_exists:
                 # Header with universal T-notation and advanced metrics
                 writer.writerow([
-                    "Basename", "Grid_Size", "Voxel_Size_m", "BG_Type", "Mode", "Solver", "Recipe", 
-                    "Stretch_Ratio", "Poisson_Ratio",
+                    "Basename", "Grid_Size", "Voxel_Size_m", "BG_Type", "Base_Rotation", "Mode", "Solver", "Recipe", 
+                    "Stretch_Ratio", "Stretch_Axis", "Poisson_Ratio",
                     "PolymerA_Frac", "PolymerB_Frac", "Secondary_Inter_Frac", "Primary_Inter_Frac", "Filler_Frac",
                     "Contact_Ratio", "Tunneling_Ratio", "Connectivity_Ratio",
                     "N_Contact_Voxels", "N_Tunnel_Voxels", "N_Filler_Voxels", "N_Conductive_Candidate_Voxels",
@@ -607,8 +632,8 @@ def main():
                 ])
                 
             writer.writerow([
-                current_basename, f"{final_grid.shape[2]}x{final_grid.shape[1]}x{final_grid.shape[0]}", args.voxel_size, args.bg_type, args.physics_mode, args.solver, " ".join(args.recipe),
-                stretch, args.poisson_ratio if stretch != 1.0 else "N/A",
+                current_basename, f"{final_grid.shape[2]}x{final_grid.shape[1]}x{final_grid.shape[0]}", args.voxel_size, args.bg_type, args.base_rotation, args.physics_mode, args.solver, " ".join(args.recipe),
+                stretch, args.stretch_axis, args.poisson_ratio if stretch != 1.0 else "N/A",
                 f"{phase_stats['polymer_a_fraction']:.4f}",
                 f"{phase_stats['polymer_b_fraction']:.4f}",
                 f"{phase_stats['secondary_interface_fraction']:.4f}", 
