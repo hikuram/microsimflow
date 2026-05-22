@@ -76,6 +76,10 @@ SUGGESTED_PARAMS_BY_TYPE = {
     "staggered": ["radius", "layer_thickness", "min_layers", "max_layers", "max_offset_pct", "mean_dir", "kappa", "prop"],
 }
 
+PARAM_DEFAULT_FALLBACKS = {
+    "protrusion_coef": "0.0025",
+}
+
 def stage_key(stage_id: int, name: str) -> str:
     return f"filler_stage_{stage_id}_{name}"
 
@@ -156,13 +160,67 @@ def reset_stage_params(stage_id: int) -> None:
     st.session_state[params_key] = DEFAULT_FILLER_PARAMS.get(filler_type, "")
 
 
+def parse_param_entries(params: str) -> list[tuple[str, str]]:
+    entries: list[tuple[str, str]] = []
+    for part in params.split(":"):
+        item = part.strip()
+        if not item:
+            continue
+        key, value = item.split("=", 1) if "=" in item else (item, "")
+        entries.append((key.strip(), value.strip()))
+    return entries
+
+
+def get_existing_param_keys(params: str) -> set[str]:
+    return {key for key, _ in parse_param_entries(params)}
+
+
+def get_default_param_value(filler_type: str, param_name: str) -> str:
+    for key, value in parse_param_entries(DEFAULT_FILLER_PARAMS.get(filler_type, "")):
+        if key == param_name:
+            return value
+
+    if param_name == "prop":
+        return normalize_prop_value(
+            str(st.session_state.get("builder_default_filler_prop", ""))
+        )
+
+    return PARAM_DEFAULT_FALLBACKS.get(param_name, "")
+
+
 def append_param_to_recipe(stage_id: int, param_name: str) -> None:
+    if not param_name:
+        return
+
+    filler_type = st.session_state.get(stage_key(stage_id, "type")) or "rigidfiber"
     params_key = stage_key(stage_id, "params")
     current_val = st.session_state.get(params_key, "").strip()
+    if param_name in get_existing_param_keys(current_val):
+        return
+
+    default_value = get_default_param_value(filler_type, param_name)
+    new_entry = f"{param_name}={default_value}" if default_value else f"{param_name}="
+
     if current_val and not current_val.endswith(":"):
-        st.session_state[params_key] = f"{current_val}:{param_name}="
+        st.session_state[params_key] = f"{current_val}:{new_entry}"
     else:
-        st.session_state[params_key] = f"{current_val}{param_name}="
+        st.session_state[params_key] = f"{current_val}{new_entry}"
+
+
+def add_selected_param(stage_id: int) -> None:
+    candidate_key = stage_key(stage_id, "param_candidate")
+    selected_param = st.session_state.get(candidate_key)
+    param_name = str(selected_param or "")
+    if not param_name:
+        return
+
+    params_key = stage_key(stage_id, "params")
+    current_params = st.session_state.get(params_key, "")
+    if param_name in get_existing_param_keys(current_params):
+        st.session_state[candidate_key] = None
+        return
+
+    append_param_to_recipe(stage_id, param_name)
 
 
 def normalize_prop_value(value: str) -> str:
@@ -653,16 +711,28 @@ def render_builder() -> None:
                     )
 
                     suggestions = SUGGESTED_PARAMS_BY_TYPE.get(filler_type, ["prop"])
-                    st.caption("Quick add parameter keys:")
-                    cols = st.columns(len(suggestions) + 2)
-                    for i, param_name in enumerate(suggestions):
-                        cols[i].button(
-                            f"+ {param_name}",
-                            key=f"add_{param_name}_{stage_id}",
-                            type="secondary",
-                            on_click=append_param_to_recipe,
-                            args=(stage_id, param_name)
-                        )
+                    add_col, select_col = st.columns([1, 5])
+                    add_col.button(
+                        "+ Add",
+                        key=f"add_stage_param_{stage_id}",
+                        type="secondary",
+                        width="stretch",
+                        help="Add the selected parameter key.",
+                        on_click=add_selected_param,
+                        args=(stage_id,),
+                    )
+                    selected_candidate = select_col.selectbox(
+                        "Add parameter key",
+                        suggestions,
+                        index=None,
+                        key=stage_key(stage_id, "param_candidate"),
+                        placeholder="Choose a parameter to add",
+                        label_visibility="collapsed"
+                    )
+                    if selected_candidate in get_existing_param_keys(
+                        st.session_state.get(stage_key(stage_id, "params"), "")
+                    ):
+                        select_col.caption("This key is already included.")
 
                     st.markdown("**Volume fraction Vf**")
                     c1, c2, c3 = st.columns(3)
