@@ -915,7 +915,7 @@ def render_builder() -> None:
                             row = st.session_state.recipe_queue.iloc[target_idx]
                             hash_text = (
                                 f"{row['Recipe']}_{row['Stretch']}_"
-                                f"{row['Seed']}_{grid_size}"
+                                f"{row['Seed']}_{grid_size}_{base_rotation}_{stretch_axis}"
                             )
                             hash_str = hashlib.md5(hash_text.encode()).hexdigest()[:8]
                             enforce_preview_cache_limits()
@@ -992,7 +992,7 @@ def render_builder() -> None:
                                 )
                                 hash_text = (
                                     f"{row['Recipe']}_{row['Stretch']}_"
-                                    f"{row['Seed']}_{grid_size}"
+                                    f"{row['Seed']}_{grid_size}_{base_rotation}_{stretch_axis}"
                                 )
                                 hash_str = hashlib.md5(
                                     hash_text.encode()
@@ -1080,8 +1080,10 @@ def render_builder() -> None:
                     return
 
                 stretch = float(row["Stretch"])
-                hash_text = f"{row['Recipe']}_{stretch}_{row['Seed']}_{grid_size}"
+                
+                hash_text = f"{row['Recipe']}_{stretch}_{row['Seed']}_{grid_size}_{base_rotation}_{stretch_axis}"
                 hash_str = hashlib.md5(hash_text.encode()).hexdigest()[:8]
+                
                 enforce_preview_cache_limits()
                 ensure_project_dir(CACHE_DIR_NAME)
                 raw_file = os.path.join(
@@ -1103,9 +1105,20 @@ def render_builder() -> None:
                         return
 
                     lam_nu = stretch ** (-float(poisson_ratio))
-                    nz = max(1, int(round(int(grid_size) * lam_nu)))
-                    ny = max(1, int(round(int(grid_size) * lam_nu)))
-                    nx = max(1, int(round(int(grid_size) * stretch)))
+                    
+                    if stretch_axis == "X":
+                        nz = max(1, int(round(int(grid_size) * lam_nu)))
+                        ny = max(1, int(round(int(grid_size) * lam_nu)))
+                        nx = max(1, int(round(int(grid_size) * stretch)))
+                    elif stretch_axis == "Y":
+                        nz = max(1, int(round(int(grid_size) * lam_nu)))
+                        ny = max(1, int(round(int(grid_size) * stretch)))
+                        nx = max(1, int(round(int(grid_size) * lam_nu)))
+                    elif stretch_axis == "Z":
+                        nz = max(1, int(round(int(grid_size) * stretch)))
+                        ny = max(1, int(round(int(grid_size) * lam_nu)))
+                        nx = max(1, int(round(int(grid_size) * lam_nu)))
+
                     try:
                         with st.spinner("Computing 3D isosurfaces..."):
                             fig_3d, final_grid = load_and_generate_3d_figure(
