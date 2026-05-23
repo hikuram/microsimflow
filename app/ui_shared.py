@@ -352,9 +352,56 @@ def load_csv_log(csv_path: str, file_mtime_ns: int) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
+# =============================================================================
+# Dashboard Components
+# =============================================================================
+
+@st.dialog("HTML Report Preview", width="large")
+def show_html_report_dialog(html_content: str) -> None:
+    """Display the HTML report inside a modal dialog using native st.html."""
+    st.html(html_content)
+
+
+@st.fragment
+def render_interactive_explorer(df: pd.DataFrame) -> None:
+    """
+    A lightweight, clean scatter plot explorer allowing selection of X, Y, and color axes.
+    Decorated with @st.fragment so axis switching doesn't trigger a full app reload.
+    """
+    st.markdown("#### :material/scatter_plot: Metrics Explorer")
+    st.caption("Select axes to explore the relationships between structure and properties.")
+
+    numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
+    
+    # Pick categorical columns with fewer than 20 unique values for color coding
+    categorical_cols = df.select_dtypes(exclude=["number"]).columns.tolist()
+    color_candidates = [c for c in categorical_cols if df[c].nunique() < 20]
+    color_options = ["None"] + color_candidates
+
+    # Smart defaults for physical properties vs structure metrics
+    default_x = numeric_cols.index("Filler_Frac") if "Filler_Frac" in numeric_cols else 0
+    default_y = numeric_cols.index("Connectivity_Ratio") if "Connectivity_Ratio" in numeric_cols else min(1, len(numeric_cols)-1)
+
+    # Use max 3 columns for a clean look
+    col_x, col_y, col_color = st.columns(3)
+    
+    x_axis = col_x.selectbox("X-axis", options=numeric_cols, index=default_x)
+    y_axis = col_y.selectbox("Y-axis", options=numeric_cols, index=default_y)
+    color_by = col_color.selectbox("Color by", options=color_options, index=0)
+
+    chart_kwargs = {"x": x_axis, "y": y_axis}
+    if color_by != "None":
+        chart_kwargs["color"] = color_by
+
+    # Streamlit native chart (no use_container_width required, expands natively)
+    st.scatter_chart(df, **chart_kwargs)
+
+
 def render_csv_dashboard(csv_path: str, *, html_out: str | None = None) -> None:
+    """Main rendering function for the unified dashboard."""
     path = resolve_project_path(csv_path)
     st.caption(f"CSV log path: `{display_project_path(path)}`")
+    
     if not path.exists():
         st.info(
             "No CSV log found yet. Run at least one workflow step first.",
@@ -367,9 +414,7 @@ def render_csv_dashboard(csv_path: str, *, html_out: str | None = None) -> None:
         st.warning("The CSV log is empty.", icon=":material/warning:")
         return
 
-    numeric_cols = df.select_dtypes(include="number").columns.tolist()
-    object_cols = df.select_dtypes(exclude="number").columns.tolist()
-
+    # Keep top-level overview metrics
     with st.container(horizontal=True):
         st.metric("Rows", f"{len(df):,}", border=True)
         st.metric("Columns", f"{len(df.columns):,}", border=True)
@@ -378,74 +423,39 @@ def render_csv_dashboard(csv_path: str, *, html_out: str | None = None) -> None:
         if "Basename" in df.columns:
             st.metric("Models", f"{df['Basename'].nunique():,}", border=True)
 
-    chart_tab, table_tab, download_tab = st.tabs(
-        [":material/show_chart: Trends", ":material/table: Data", ":material/download: Export"]
-    )
+    st.write("") # Lightweight spacing
 
-    with chart_tab:
-        if not numeric_cols:
-            st.info("No numeric columns are available for plotting.")
-        else:
-            default_cols = numeric_cols[: min(4, len(numeric_cols))]
-            selected_cols = st.multiselect(
-                "Numeric columns",
-                options=numeric_cols,
-                default=default_cols,
-                key=f"csv_cols_{path.name}",
-            )
-            row_count = len(df)
-            if row_count <= 10:
-                tail_rows = row_count
-                st.caption(f"Rows to plot: all {row_count} row(s)")
-            else:
-                tail_rows = st.slider(
-                    "Rows to plot",
-                    min_value=10,
-                    max_value=row_count,
-                    value=min(100, row_count),
-                    step=10 if row_count >= 20 else 1,
-                    key=f"csv_rows_{path.name}",
-                )
-            if selected_cols:
-                plot_df = df[selected_cols].tail(tail_rows).reset_index(drop=True)
-                st.line_chart(plot_df, height=320)
-            else:
-                st.info("Select at least one numeric column.")
-
-    with table_tab:
-        filter_text = st.text_input(
-            "Quick filter",
-            placeholder="Type text to filter visible rows",
-            key=f"csv_filter_{path.name}",
-        )
-        view_df = df
-        if filter_text and object_cols:
-            mask = pd.Series(False, index=df.index)
-            for col in object_cols:
-                mask = mask | df[col].astype(str).str.contains(
-                    filter_text, case=False, na=False
-                )
-            view_df = df[mask]
-        st.dataframe(view_df, hide_index=True, height=420)
-
-    with download_tab:
-        st.download_button(
-            "Download CSV log",
-            data=path.read_bytes(),
-            file_name=path.name,
-            mime="text/csv",
-            icon=":material/download:",
-        )
-        if html_out:
-            html_path = resolve_project_path(html_out)
+    # --- 1. HTML Report Actions (Side-by-side buttons) ---
+    if html_out:
+        st.markdown("#### :material/description: HTML Report")
+        html_path = resolve_project_path(html_out)
+        
+        with st.container(horizontal=True):
             if html_path.exists():
+                html_data = html_path.read_text(encoding="utf-8")
+                
                 st.download_button(
-                    "Download HTML report",
-                    data=html_path.read_bytes(),
+                    "Download HTML",
+                    data=html_data,
                     file_name=html_path.name,
                     mime="text/html",
                     icon=":material/download:",
                 )
+                
+                if st.button("Preview in Dialog", icon=":material/visibility:"):
+                    show_html_report_dialog(html_data)
+            else:
+                st.caption("Generate the HTML report first to download or preview.")
+                
+        st.write("") # Lightweight spacing
+
+    # --- 2. Interactive Explorer ---
+    render_interactive_explorer(df)
+    st.write("") # Lightweight spacing
+
+    # --- 3. Raw Data Table ---
+    st.markdown("#### :material/table: Raw Data")
+    st.dataframe(df, hide_index=True)
 
 
 def run_project_command(args: Iterable[str]) -> subprocess.CompletedProcess[bytes]:
