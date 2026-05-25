@@ -71,9 +71,9 @@ SUGGESTED_PARAMS_BY_TYPE = {
     "flexfiber": ["length", "radius", "max_bend_deg", "max_total_bends", "protrusion_coef", "prop"],
     "flake": ["radius", "thickness", "mean_dir", "kappa", "protrusion_coef", "prop"],
     "sphere": ["radius", "protrusion_coef", "prop"],
-    "irregfiber": ["length", "shape", "radius", "ratio", "mean_dir", "kappa", "prop"],
-    "agglomerate": ["num_fibers", "length", "radius", "max_bend_deg", "prop"],
-    "staggered": ["radius", "layer_thickness", "min_layers", "max_layers", "max_offset_pct", "mean_dir", "kappa", "prop"],
+    "irregfiber": ["length", "shape", "radius", "ratio", "mean_dir", "kappa", "protrusion_coef", "prop"],
+    "agglomerate": ["num_fibers", "length", "radius", "max_bend_deg", "protrusion_coef", "prop"],
+    "staggered": ["radius", "layer_thickness", "min_layers", "max_layers", "max_offset_pct", "mean_dir", "kappa", "protrusion_coef", "prop"],
 }
 
 PARAM_DEFAULT_FALLBACKS = {
