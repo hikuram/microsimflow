@@ -18,7 +18,6 @@ from micro_builder import (
     build_cylinder_hex_grid,
     build_bcc_grid,
     place_fillers_hybrid,
-    place_adaptive_fibers,
     get_flake_mask,
     get_sphere_mask,
     get_rigid_cylinder_mask,
@@ -74,7 +73,6 @@ Available types and common parameters:
   - flake        : radius, thickness
   - sphere       : radius
   - rigidfiber   : length, radius
-  - adaptfiber   : length, radius, max_bend_deg, max_total_bends, max_protrusion_ratio
   - flexfiber    : length, radius, max_bend_deg, max_total_bends
   - agglomerate  : num_fibers, length, radius, max_bend_deg, max_total_bends
   - staggered    : radius, layer_thickness, min_layers, max_layers, max_offset_pct
@@ -302,17 +300,7 @@ def main():
                 'mean_dir': opts.get('mean_dir', [0.0, 0.0, 1.0]), 'kappa': opts.get('kappa', 0.0)
             }
             place_fillers_hybrid(filler_func=get_irregular_fiber_mask, kwargs=kwargs, desc="Irregular Fiber", **hybrid_args)
-        elif f_type == "adaptfiber":
-            # NOTE: adaptfiber is explicitly excluded from affine deformation support. 
-            # It writes directly to comp_grid and is only evaluated at lambda=1.0.
-            place_adaptive_fibers(comp_grid=comp_grid, tpms_grid=tpms_grid, target_vol_frac=f_vol,
-                                  length=opts.get('length', 90), radius=opts.get('radius', 2),
-                                  max_bend_deg=opts.get('max_bend_deg', 45), max_total_bends=opts.get('max_total_bends', 5),
-                                  min_backbone_ratio=opts.get('min_backbone_ratio', 0.9), max_protrusion_ratio=protrusion_coef,
-                                  log_file=build_log, physics_mode=args.physics_mode, shell_count_grid=shell_count_grid,
-                                  filler_id=current_filler_id,
-                                  tunnel_radius=args.tunnel_radius)
-                                  
+        
         elif f_type == "flexfiber":
             kwargs = {
                 'length': opts.get('length', 90), 'radius': opts.get('radius', 2),
