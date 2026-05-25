@@ -11,9 +11,9 @@ stretch_axes = ["X", "Y", "Z"]
 # Diverse recipes for edge cases and complex structural interactions
 recipes = [
     # 1. Rigid fiber with strong anisotropy (diagonal alignment)
-    "rigidfiber:0.04:length=60:radius=2:mean_dir=1,1,0:kappa=5.0",
+    "rigidfiber:0.04:length=60:radius=2:mean_dir=1,1,0:kappa=10.0",
     # 2. Flakes with strong Z-axis alignment
-    "flake:0.04:radius=12:thickness=2:mean_dir=0,0,1:kappa=10.0",
+    "flake:0.04:radius=12:thickness=2:mean_dir=1,0,0:kappa=-20.0",
     # 3. Highly flexible fibers with multiple bends
     "flexfiber:0.04:length=70:radius=2:max_bend_deg=60:max_total_bends=15",
     # 4. Agglomerate (clustered fibers)
