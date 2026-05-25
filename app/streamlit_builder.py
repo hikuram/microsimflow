@@ -519,7 +519,7 @@ def render_builder() -> None:
                 "Feature size (px)",
                 value=10.0,
                 min_value=1.0,
-                step=1.0,
+                step=10.0,
                 help="Wavelength for TPMS, Radius for Islands"
             )
             diffusion_factor = diff_col.number_input(
@@ -667,7 +667,7 @@ def render_builder() -> None:
             ):
                 st.markdown("#### :material/tune: Configure sweep parameters")
                 st.button(
-                    "Add filler",
+                    "Add stage",
                     icon=":material/add:",
                     type="tertiary",
                     on_click=add_filler_stage,
@@ -758,21 +758,18 @@ def render_builder() -> None:
                     c1, c2, c3 = st.columns(3)
                     c1.number_input(
                         "Min",
-                        value=0.05,
                         step=0.01,
                         key=stage_key(stage_id, "vf_min"),
                         format="%.3f",
                     )
                     c2.number_input(
                         "Max",
-                        value=0.05,
                         step=0.01,
                         key=stage_key(stage_id, "vf_max"),
                         format="%.3f",
                     )
                     c3.number_input(
                         "Steps",
-                        value=1,
                         step=1,
                         min_value=1,
                         key=stage_key(stage_id, "vf_steps"),
@@ -809,7 +806,7 @@ def render_builder() -> None:
                 c7, c8 = st.columns(2)
                 c7.number_input(
                     "Start",
-                    value=-1,
+                    value=0,
                     step=1,
                     key="sweep_seed_start",
                     help="-1 uses random seeds",
