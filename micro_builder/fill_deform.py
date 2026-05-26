@@ -674,7 +674,7 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
                          max_attempts=1000000, fallback_func=None, desc="",
                          protrusion_coef=0.0025, log_file=None,
                          physics_mode='thermal', shell_count_grid=None,
-                         filler_id=4, tunnel_radius=2, placement_registry=None):
+                         filler_id=4, tunnel_radius=3, placement_registry=None):
     
     shape = comp_grid.shape
     total_voxels = comp_grid.size
@@ -737,7 +737,7 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
                 if shell_count_grid is not None:
                     # Automatically define dual radii from the single tunnel_radius parameter
                     r_thick = tunnel_radius
-                    r_thin = max(1, int(np.ceil(tunnel_radius / 2.0)))
+                    r_thin = max(1, tunnel_radius - 1)
                     
                     # Pad the stamp to prevent dilation from clipping at the bounding box edges
                     padded_stamp = np.pad(raw_stamp > 0, pad_width=r_thick, mode='constant', constant_values=False)
@@ -953,7 +953,7 @@ def _paste_mask_to_grid(comp_grid, shell_count_grid, cz, cy, cx, mask, filler_id
     # Compute dual-radii shell for all modes unconditionally
     if shell_count_grid is not None:
         r_thick = tunnel_radius
-        r_thin = max(1, int(np.ceil(tunnel_radius / 2.0)))
+        r_thin = max(1, tunnel_radius -1)
         
         # Pad the dynamically generated mask to prevent clipping
         padded_mask = np.pad(mask, pad_width=r_thick, mode='constant', constant_values=False)
