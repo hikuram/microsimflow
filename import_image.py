@@ -153,7 +153,7 @@ def main():
     parser.add_argument("--voxel_size", type=float, required=True, help="Physical size of one voxel in meters")
     parser.add_argument("--threshold", type=float, default=128, help="Binarization threshold (Matrix < Threshold <= Filler)")
     parser.add_argument("--pattern", type=str, choices=['erosion', 'dilation'], default='dilation', help="Interface generation algorithm")
-    parser.add_argument("--tunnel_radius", type=int, default=2, help="Radius for secondary tunneling interface in voxels")
+    parser.add_argument("--tunnel_radius", type=int, default=3, help="Radius for secondary tunneling interface in voxels")
     parser.add_argument("--enforce_pbc", action="store_true", help="Apply 3D mirror reflection to enforce PBC")
     
     # Anti-over-segmentation knobs
