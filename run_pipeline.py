@@ -99,8 +99,8 @@ Example: --recipe "rigidfiber:0.05:length=60:radius=2:prop=500.0" "flake:0.02:ra
     parser.add_argument("--prop_inter2", type=str, default=None, help="Property value for Secondary Contact/Tunnel phase (Phase 2).")
     parser.add_argument("--prop_inter", type=str, default=None, help="Property value for Primary Contact/Tunnel phase (Phase 3).")
     parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility.")
-    parser.add_argument("--tunnel_radius", type=int, default=2, 
-                        help="Radius in voxels for nearest-neighbor (tunneling/secondary) detection (default: 2).")
+    parser.add_argument("--tunnel_radius", type=int, default=3, 
+                        help="Radius in voxels for nearest-neighbor (tunneling/secondary) detection (default: 3).")
     parser.add_argument("--contact_radius", type=int, default=1, 
                         help="Radius in voxels for primary contact interface thickness (default: 1).")
     parser.add_argument("--stretch_ratios", type=float, nargs='+', default=[1.0], 
