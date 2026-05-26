@@ -152,7 +152,7 @@ def _cleanup_small_components_anchored(target_mask, anchor_mask, min_component_s
 
 def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics_mode='thermal', 
                             primary_inter_id=3, secondary_inter_id=2, filler_start_id=4,
-                            sliver_fill_iters=1, spike_min_neighbors=2, min_interface_component_size=2,
+                            sliver_fill_iters=1, spike_min_neighbors=1, min_interface_component_size=2,
                             contact_radius=1):
     """
     Integrate background matrix and filler phases.
