@@ -604,7 +604,7 @@ def render_builder() -> None:
             radius_col, contact_col = st.columns(2)
             tunnel_radius = radius_col.number_input(
                 "Tunnel radius",
-                value=2,
+                value=3,
                 step=1,
                 min_value=1,
             )
