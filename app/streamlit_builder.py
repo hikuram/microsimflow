@@ -579,12 +579,7 @@ def render_builder() -> None:
 
         with st.expander("Advanced export and metrics", icon=":material/save:"):
             writer_opt = st.selectbox("Export format", ["vti", "zstd", "arrow"], index=0)
-            vti_fields_opt = st.radio(
-                "Embed fields to VTI",
-                ["off", "on"],
-                index=0,
-                horizontal=True,
-            )
+            vti_fields_opt = st.selectbox("Embed fields to VTI", ["norm", "components", "both", "off"], index=0)
             skip_structure_metrics = st.toggle("Skip structure metrics", value=False)
             advanced_metrics = st.toggle("Calculate advanced metrics", value=False)
 
