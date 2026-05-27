@@ -84,8 +84,8 @@ Example: --recipe "rigidfiber:0.05:length=60:radius=2:prop=500.0" "flake:0.02:ra
     parser.add_argument("--csv_log", type=str, default="comparison_results.csv", help="CSV file to append/update results (default: 'comparison_results.csv').")
     parser.add_argument("--writer", type=str, default="vti", choices=["vti", "zstd", "arrow"],
                         help="Export format for the final microstructure (vti, zstd, arrow). Default: vti.")
-    parser.add_argument("--vti_fields", type=str, default="off", choices=["on", "off"],
-                        help="Embed additional physical fields (pressure, velocity, etc.) into VTI (default: off).")
+    parser.add_argument("--vti_fields", type=str, default="norm", choices=["norm", "components", "both", "off"],
+                        help="Embed additional physical fields (pressure, velocity, etc.) into VTI (default: norm).")
     parser.add_argument("--physics_mode", type=str, default="thermal",
                         choices=["thermal", "electrical", "mechanics", "permeability"],
                         help="Physics mode which defines interface handling and default properties (default: thermal).")
@@ -489,7 +489,7 @@ def main():
             
             # Dynamically build the command. Add '-e' (export) only if VTI fields are requested.
             chfem_cmd = ["chfem_exec", f"{current_basename}.nf", f"{current_basename}.raw", "-m", log_file]
-            if args.vti_fields == "on":
+            if args.vti_fields != "off":
                 chfem_cmd.insert(3, "-e")
                 
             subprocess.run(chfem_cmd)
@@ -516,13 +516,14 @@ def main():
                     puma_time = f"{ptime:.2f}"
                     # PuMA (Laplace) only provides 3 diagonal components
                     puma_results = [pkx, pky, pkz, "", "", ""]
-        
+
         # =====================================================================
         # --- Extract and embed physical fields into VTI ---
         # =====================================================================
         extra_viz_fields = {}
-        if args.vti_fields == "on" and args.solver in ["chfem", "both"]:
-            print(f"  -> Scanning for physical field outputs to embed in VTI...")
+        # Changed condition: proceed if vti_fields is not 'off'
+        if args.vti_fields != "off" and args.solver in ["chfem", "both"]:
+            print(f"  -> Scanning for physical field outputs to embed in VTI (Mode: {args.vti_fields})...")
 
             # Define base filenames and the corresponding chfem binary suffixes and components.
             # Note: chfem outputs "temperature" and "flux" binaries for both thermal and electrical analyses.
@@ -560,23 +561,44 @@ def main():
                                 else:
                                     field_data = raw_data.reshape((nz, nx, ny, comps)).transpose(0, 2, 1, 3)
                                     
-                                    # === Forcefully split all vectors and tensors into independent scalars ===
-                                    if comps == 3:
-                                        # Workaround: ParaView's Volume Rendering often ignores Y/Z vector channel selections.
-                                        vec_labels = ['x', 'y', 'z']
-                                        for i, vlabel in enumerate(vec_labels):
-                                            extra_viz_fields[f"{field_name}_{vlabel}"] = field_data[..., i]
+                                    # ========================================================
+                                    # 1. Norm / Scalar aggregation mode
+                                    # ========================================================
+                                    if args.vti_fields in ["norm", "both"]:
+                                        if comps == 3:
+                                            # Calculate vector magnitude (L2 norm)
+                                            norm_data = np.linalg.norm(field_data, axis=-1)
+                                            extra_viz_fields[f"{field_name}_Norm"] = norm_data
                                             
-                                    elif comps == 6:
-                                        # Workaround: ParaView's Volume Mapper crashes on arrays with >4 components.
-                                        stress_labels = ['xx', 'yy', 'zz', 'yz', 'zx', 'xy']
-                                        for i, slabel in enumerate(stress_labels):
-                                            extra_viz_fields[f"{field_name}_{slabel}"] = field_data[..., i]
+                                        elif comps == 6:
+                                            # For stress tensors, calculate Von Mises stress as a representative scalar
+                                            # field_data: xx(0), yy(1), zz(2), yz(3), zx(4), xy(5)
+                                            xx, yy, zz = field_data[..., 0], field_data[..., 1], field_data[..., 2]
+                                            yz, zx, xy = field_data[..., 3], field_data[..., 4], field_data[..., 5]
+                                            
+                                            von_mises = np.sqrt(0.5 * ((xx - yy)**2 + (yy - zz)**2 + (zz - xx)**2 + 6 * (yz**2 + zx**2 + xy**2)))
+                                            extra_viz_fields[f"{field_name}_VonMises"] = von_mises
+
+                                    # ========================================================
+                                    # 2. Traditional component splitting mode
+                                    # ========================================================
+                                    if args.vti_fields in ["components", "both"]:
+                                        if comps == 3:
+                                            # Split vector into individual scalar fields to prevent ParaView Volume Rendering issues
+                                            vec_labels = ['x', 'y', 'z']
+                                            for i, vlabel in enumerate(vec_labels):
+                                                extra_viz_fields[f"{field_name}_{vlabel}"] = field_data[..., i]
+                                                
+                                        elif comps == 6:
+                                            # Split tensor to prevent ParaView Volume Mapper crashes (>4 components)
+                                            stress_labels = ['xx', 'yy', 'zz', 'yz', 'zx', 'xy']
+                                            for i, slabel in enumerate(stress_labels):
+                                                extra_viz_fields[f"{field_name}_{slabel}"] = field_data[..., i]
                                             
                                 print(f"    - Imported field: {field_name} from {file_path}")
                             except Exception as e:
                                 print(f"    - Failed to import field {field_name}: {e}")
-                
+                                
                 if not found_any:
                     print("    ! Warning: No binary output files were found.")
                     print("    ! Make sure chfem_exec is executed with the export flag (e.g., '-e').")
