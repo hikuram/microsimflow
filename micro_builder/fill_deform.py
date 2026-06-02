@@ -611,6 +611,43 @@ def _check_and_place_fast(comp_grid, tpms_grid, cz, cy, cx,
 
 
 @njit
+def _check_validity_and_shell_contact_fast(comp_grid, tpms_grid, shell_count_grid, cz, cy, cx, 
+                                           stamp_offsets, current_protrusion_limit):
+    """
+    Numba-optimized JIT compiled function.
+    Checks validity (protrusion and hardcore overlap) and evaluates shell contact for attraction bias.
+    Returns: (is_valid: bool, has_shell_contact: bool)
+    """
+    shape_z, shape_y, shape_x = comp_grid.shape
+    num_coords = stamp_offsets.shape[0]
+    
+    protrusion_count = 0
+    has_shell_contact = False
+    
+    for i in range(num_coords):
+        tz = (stamp_offsets[i, 0] + cz) % shape_z
+        ty = (stamp_offsets[i, 1] + cy) % shape_y
+        tx = (stamp_offsets[i, 2] + cx) % shape_x
+        
+        if tpms_grid[tz, ty, tx] == 1:
+            protrusion_count += 1
+            
+        # 1. Overlap Check (Strict Early Exit for Hardcore)
+        if comp_grid[tz, ty, tx] >= 2:
+            return False, False 
+            
+        # 2. Shell Contact Check (Lower 7 bits > 0 means attraction zone)
+        if (shell_count_grid[tz, ty, tx] & 127) > 0:
+            has_shell_contact = True
+            
+    # Protrusion limit check
+    if protrusion_count > num_coords * current_protrusion_limit:
+        return False, False
+        
+    return True, has_shell_contact
+
+
+@njit
 def _evaluate_overlap_softcore_fast(comp_grid, tpms_grid, cz, cy, cx, 
                                     stamp_offsets, current_protrusion_limit):
     """
@@ -672,6 +709,7 @@ def _write_candidate_fast(comp_grid, shell_count_grid, cz, cy, cx, stamp_offsets
 
 def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_frac,
                          max_attempts=1000000, fallback_func=None, desc="",
+                         attraction_retries=0,
                          protrusion_coef=0.0025, log_file=None,
                          physics_mode='thermal', shell_count_grid=None,
                          filler_id=4, tunnel_radius=3, placement_registry=None):
@@ -760,15 +798,43 @@ def place_fillers_hybrid(comp_grid, tpms_grid, filler_func, kwargs, target_vol_f
 
             # Execute placement logic based on the current mode
             if not overlap_mode:
-                # --- Hardcore Mode: Ultra-fast single random pick and strict placement ---
-                idx = builder.rng.integers(0, num_valid_coords)
-                cz, cy, cx = valid_z[idx], valid_y[idx], valid_x[idx]
+                if attraction_retries > 0 and shell_count_grid is not None:
+                    # --- Hardcore Mode with Attraction Bias ---
+                    best_coord = None
+                    success = False
+                    
+                    # Retry up to attraction_retries times, but it only counts as one global attempt
+                    for _ in range(attraction_retries + 1):
+                        idx = builder.rng.integers(0, num_valid_coords)
+                        cand_z, cand_y, cand_x = valid_z[idx], valid_y[idx], valid_x[idx]
+                        
+                        is_valid, shell_contact = _check_validity_and_shell_contact_fast(
+                            comp_grid, tpms_grid, shell_count_grid, cand_z, cand_y, cand_x, 
+                            stamp_offsets, current_protrusion_limit
+                        )
+                        
+                        if is_valid:
+                            if best_coord is None:
+                                best_coord = (cand_z, cand_y, cand_x) # Keep the first valid placement
+                                
+                            if shell_contact:
+                                best_coord = (cand_z, cand_y, cand_x)
+                                break # Perfect spot found (within attraction zone), accept immediately
+                                
+                    if best_coord is not None:
+                        cz, cy, cx = best_coord
+                        _write_candidate_fast(comp_grid, shell_count_grid, cz, cy, cx, stamp_offsets, stamp_vals)
+                        success = True
+                else:
+                    # --- Original Hardcore Mode: Ultra-fast single random pick and strict placement ---
+                    idx = builder.rng.integers(0, num_valid_coords)
+                    cz, cy, cx = valid_z[idx], valid_y[idx], valid_x[idx]
 
-                success = _check_and_place_fast(
-                    comp_grid, tpms_grid, cz, cy, cx, 
-                    stamp_offsets, stamp_vals, current_protrusion_limit, 
-                    filler_id
-                )
+                    success = _check_and_place_fast(
+                        comp_grid, tpms_grid, cz, cy, cx, 
+                        stamp_offsets, stamp_vals, current_protrusion_limit, 
+                        filler_id
+                    )
                 
             else:
                 # --- Softcore Mode: Best-of-N (N=3) approach to minimize overlaps ---
