@@ -77,7 +77,8 @@ Available types and common parameters:
   - agglomerate  : num_fibers, length, radius, max_bend_deg, max_total_bends
   - staggered    : radius, layer_thickness, min_layers, max_layers, max_offset_pct
 Optional param: 'prop=X' to override the physical property for this specific filler.
-Example: --recipe "rigidfiber:0.05:length=60:radius=2:prop=500.0" "flake:0.02:radius=15:thickness=2"
+Optional param: 'attraction_retries=N' to enable aggregation bias (default: 0).
+Example: --recipe "rigidfiber:0.05:length=60:radius=2:prop=500.0:attraction_retries=10" "flake:0.02:radius=15:thickness=2"
 """
     group.add_argument("--recipe", nargs='+', help=recipe_help)
     parser.add_argument("--basename", type=str, default="model", help="Base filename for generated files (default: 'model').")
@@ -260,6 +261,10 @@ def main():
 
         prop_map[current_filler_id] = opts.pop('prop', default_filler)
         protrusion_coef = opts.pop('protrusion_coef', 0.0025)
+        
+        # Extract attraction_retries for the hybrid placement logic
+        attraction_retries = opts.pop('attraction_retries', 0)
+        
         t_step = time.time()
         
         hybrid_args = {
@@ -267,6 +272,7 @@ def main():
             'tpms_grid': tpms_grid,
             'target_vol_frac': f_vol,
             'protrusion_coef': protrusion_coef,
+            'attraction_retries': attraction_retries,
             'log_file': build_log,
             'physics_mode': args.physics_mode,
             'shell_count_grid': shell_count_grid,
