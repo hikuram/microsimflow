@@ -123,23 +123,83 @@ def _remove_spikes_anchored(target_mask, anchor_mask, min_neighbors=2):
     neighbor_count = convolve(combined.astype(np.uint8), _NEIGHBOR6_KERNEL, mode="wrap")
     return target_mask & (neighbor_count >= min_neighbors)
 
-def _fill_polymer_slivers(final_grid, target_id=2, filler_start_id=4):
+
+# Pre-define 6-neighborhood offsets for fast face-contact checking
+_OFFSETS_6 = np.array([
+    [ 1,  0,  0], [-1,  0,  0],
+    [ 0,  1,  0], [ 0, -1,  0],
+    [ 0,  0,  1], [ 0,  0, -1]
+], dtype=np.int32)
+
+@njit(cache=True)
+def _fill_polymer_slivers(grid, polymer_id, filler_id_min, interface_id_min):
     """
-    Convert isolated polymer voxels into interface elements if they are 
-    directly sandwiched between a filler and an existing interface.
+    Fills polymer slivers trapped between an interface and a filler.
+    Uses a hybrid approach (Filler: 18-neighborhood, Interface: 6-neighborhood)
+    to balance geometric accuracy and topological percolation rescue.
+    
+    Args:
+        grid (np.ndarray): 3D microstructure grid.
+        polymer_id (int): ID representing the polymer matrix.
+        filler_id_min (int): Minimum ID value for fillers.
+        interface_id_min (int): Minimum ID value for interfaces.
+        
+    Returns:
+        np.ndarray: Updated grid with filled slivers.
     """
-    polymer_mask = final_grid < 2
-    filler_mask = final_grid >= filler_start_id
-    interface_mask = final_grid == target_id
-
-    filler_nb = convolve(filler_mask.astype(np.uint8), _NEIGHBOR6_KERNEL, mode="wrap") > 0
-    interface_nb = convolve(interface_mask.astype(np.uint8), _NEIGHBOR6_KERNEL, mode="wrap") > 0
-
-    sliver_mask = polymer_mask & filler_nb & interface_nb
-    if np.any(sliver_mask):
-        final_grid[sliver_mask] = target_id
-
-    return final_grid
+    nx, ny, nz = grid.shape
+    output_grid = grid.copy()
+    
+    for i in range(nx):
+        for j in range(ny):
+            for k in range(nz):
+                # Only evaluate polymer voxels
+                if grid[i, j, k] != polymer_id:
+                    continue
+                
+                target_interface_id = -1
+                
+                # Check 6-neighborhood for strict face-contact with any interface
+                for d in range(6):
+                    ni = (i + _OFFSETS_6[d, 0]) % nx
+                    nj = (j + _OFFSETS_6[d, 1]) % ny
+                    nk = (k + _OFFSETS_6[d, 2]) % nz
+                    
+                    val = grid[ni, nj, nk]
+                    if interface_id_min <= val < filler_id_min:
+                        target_interface_id = val
+                        break
+                
+                if target_interface_id == -1:
+                    continue
+                    
+                # Check 18-neighborhood for filler contact
+                has_filler_18 = False
+                for di in range(-1, 2):
+                    for dj in range(-1, 2):
+                        for dk in range(-1, 2):
+                            if di == 0 and dj == 0 and dk == 0:
+                                continue
+                            
+                            # Skip corners for 18-neighborhood
+                            if abs(di) + abs(dj) + abs(dk) == 3:
+                                continue
+                                
+                            ni = (i + di) % nx
+                            nj = (j + dj) % ny
+                            nk = (k + dk) % nz
+                            
+                            if grid[ni, nj, nk] >= filler_id_min:
+                                has_filler_18 = True
+                                break
+                        if has_filler_18: break
+                    if has_filler_18: break
+                    
+                # Fill the sliver by assigning the detected interface ID
+                if has_filler_18:
+                    output_grid[i, j, k] = target_interface_id
+                    
+    return output_grid
 
 
 def _cleanup_small_components_anchored(target_mask, anchor_mask, min_component_size=2):
