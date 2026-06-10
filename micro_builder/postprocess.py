@@ -136,11 +136,12 @@ def _fill_polymer_slivers(grid, target_id):
     """
     Converts isolated polymer voxels into interface elements if they are 
     sandwiched between an existing interface (target_id) and any higher-order 
-    phase (such as primary interface or fillers).
+    phase (ID > target_id).
     
-    Uses a hybrid JIT-compiled approach:
-      - 6-neighborhood: Ensures strict surface contact with the target interface.
-      - 18-neighborhood: Detects any higher-order solid phases (ID > target_id).
+    Uses a strict 6x6 neighborhood approach:
+      - 6-neighborhood: Strict face contact for BOTH the target interface 
+        and the higher-order phase.
+      - Optimized into a single loop for maximum execution speed.
       
     Args:
         grid (np.ndarray): 3D microstructure grid.
@@ -159,50 +160,32 @@ def _fill_polymer_slivers(grid, target_id):
                 if grid[i, j, k] >= 2:
                     continue
                 
-                # 2. Check 6-neighborhood for strict face-contact with the target interface
-                has_interface_6 = False
+                has_target_interface = False
+                has_higher_phase = False
+                
+                # 2. Unified 6-neighborhood check
+                # Check all 6 faces to find at least one target and one higher phase
                 for d in range(6):
                     ni = (i + _OFFSETS_6[d, 0]) % nx
                     nj = (j + _OFFSETS_6[d, 1]) % ny
                     nk = (k + _OFFSETS_6[d, 2]) % nz
                     
-                    if grid[ni, nj, nk] == target_id:
-                        has_interface_6 = True
+                    val = grid[ni, nj, nk]
+                    
+                    if val == target_id:
+                        has_target_interface = True
+                    elif val > target_id:
+                        has_higher_phase = True
+                        
+                    # Early exit if both conditions are already met
+                    if has_target_interface and has_higher_phase:
                         break
-                
-                if not has_interface_6:
-                    continue
-                    
-                # 3. Check 18-neighborhood for any higher-order phase (ID > target_id)
-                # This naturally treats both primary interfaces (if target is secondary)
-                # and fillers as solid boundaries.
-                has_higher_phase_18 = False
-                for di in range(-1, 2):
-                    for dj in range(-1, 2):
-                        for dk in range(-1, 2):
-                            if di == 0 and dj == 0 and dk == 0:
-                                continue
-                            
-                            # Exclude corners to downgrade from 26 to 18-neighborhood
-                            if abs(di) + abs(dj) + abs(dk) == 3:
-                                continue
-                                
-                            ni = (i + di) % nx
-                            nj = (j + dj) % ny
-                            nk = (k + dk) % nz
-                            
-                            if grid[ni, nj, nk] > target_id:
-                                has_higher_phase_18 = True
-                                break
-                        if has_higher_phase_18: break
-                    if has_higher_phase_18: break
-                    
-                # 4. Fill the sliver if both conditions are met
-                if has_higher_phase_18:
+                        
+                # 3. Fill the sliver if it touches BOTH strictly face-to-face
+                if has_target_interface and has_higher_phase:
                     output_grid[i, j, k] = target_id
                     
     return output_grid
-
 
 def _cleanup_small_components_anchored(target_mask, anchor_mask, min_component_size=2):
     """Same protection logic applied to isolated component cleanup."""
