@@ -132,17 +132,19 @@ _OFFSETS_6 = np.array([
 ], dtype=np.int32)
 
 @njit(cache=True)
-def _fill_polymer_slivers(grid, polymer_id, filler_id_min, interface_id_min):
+def _fill_polymer_slivers(grid, target_id):
     """
-    Fills polymer slivers trapped between an interface and a filler.
-    Uses a hybrid approach (Filler: 18-neighborhood, Interface: 6-neighborhood)
-    to balance geometric accuracy and topological percolation rescue.
+    Converts isolated polymer voxels into interface elements if they are 
+    sandwiched between an existing interface (target_id) and any higher-order 
+    phase (such as primary interface or fillers).
     
+    Uses a hybrid JIT-compiled approach:
+      - 6-neighborhood: Ensures strict surface contact with the target interface.
+      - 18-neighborhood: Detects any higher-order solid phases (ID > target_id).
+      
     Args:
         grid (np.ndarray): 3D microstructure grid.
-        polymer_id (int): ID representing the polymer matrix.
-        filler_id_min (int): Minimum ID value for fillers.
-        interface_id_min (int): Minimum ID value for interfaces.
+        target_id (int): The ID of the interface to assign to the sliver.
         
     Returns:
         np.ndarray: Updated grid with filled slivers.
@@ -153,35 +155,35 @@ def _fill_polymer_slivers(grid, polymer_id, filler_id_min, interface_id_min):
     for i in range(nx):
         for j in range(ny):
             for k in range(nz):
-                # Only evaluate polymer voxels
-                if grid[i, j, k] != polymer_id:
+                # 1. Identify polymer voxels (ID < 2)
+                if grid[i, j, k] >= 2:
                     continue
                 
-                target_interface_id = -1
-                
-                # Check 6-neighborhood for strict face-contact with any interface
+                # 2. Check 6-neighborhood for strict face-contact with the target interface
+                has_interface_6 = False
                 for d in range(6):
                     ni = (i + _OFFSETS_6[d, 0]) % nx
                     nj = (j + _OFFSETS_6[d, 1]) % ny
                     nk = (k + _OFFSETS_6[d, 2]) % nz
                     
-                    val = grid[ni, nj, nk]
-                    if interface_id_min <= val < filler_id_min:
-                        target_interface_id = val
+                    if grid[ni, nj, nk] == target_id:
+                        has_interface_6 = True
                         break
                 
-                if target_interface_id == -1:
+                if not has_interface_6:
                     continue
                     
-                # Check 18-neighborhood for filler contact
-                has_filler_18 = False
+                # 3. Check 18-neighborhood for any higher-order phase (ID > target_id)
+                # This naturally treats both primary interfaces (if target is secondary)
+                # and fillers as solid boundaries.
+                has_higher_phase_18 = False
                 for di in range(-1, 2):
                     for dj in range(-1, 2):
                         for dk in range(-1, 2):
                             if di == 0 and dj == 0 and dk == 0:
                                 continue
                             
-                            # Skip corners for 18-neighborhood
+                            # Exclude corners to downgrade from 26 to 18-neighborhood
                             if abs(di) + abs(dj) + abs(dk) == 3:
                                 continue
                                 
@@ -189,15 +191,15 @@ def _fill_polymer_slivers(grid, polymer_id, filler_id_min, interface_id_min):
                             nj = (j + dj) % ny
                             nk = (k + dk) % nz
                             
-                            if grid[ni, nj, nk] >= filler_id_min:
-                                has_filler_18 = True
+                            if grid[ni, nj, nk] > target_id:
+                                has_higher_phase_18 = True
                                 break
-                        if has_filler_18: break
-                    if has_filler_18: break
+                        if has_higher_phase_18: break
+                    if has_higher_phase_18: break
                     
-                # Fill the sliver by assigning the detected interface ID
-                if has_filler_18:
-                    output_grid[i, j, k] = target_interface_id
+                # 4. Fill the sliver if both conditions are met
+                if has_higher_phase_18:
+                    output_grid[i, j, k] = target_id
                     
     return output_grid
 
@@ -243,9 +245,9 @@ def finalize_microstructure(comp_grid, tpms_grid, shell_count_grid=None, physics
     # --- Common Interface Cleanup ---
     # 1) Polymer sliver fill
     for _ in range(sliver_fill_iters):
-        before = np.count_nonzero(final_grid == primary_inter_id)
-        final_grid = _fill_polymer_slivers(final_grid, target_id=primary_inter_id, filler_start_id=filler_start_id)
-        after = np.count_nonzero(final_grid == primary_inter_id)
+        before = np.count_nonzero(final_grid == secondary_inter_id)
+        final_grid = _fill_polymer_slivers(final_grid, target_id=secondary_inter_id)
+        after = np.count_nonzero(final_grid == secondary_inter_id)
         if after == before:
             break
 
